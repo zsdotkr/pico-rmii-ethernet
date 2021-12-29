@@ -5,13 +5,37 @@
  */
 
 .program rmii_ethernet_phy_tx_data
+.side_set 1
 .wrap_target
-    out pins, 3
+    // This program runs at half a cycle per clock (1HC/clock) to properly handle 
+    // the data loop, so every delay needs to be doubled
+
+    // Wait for data to transmit
+    set pins, 0b00      side 0
+    pull block          side 0       // min. 1 HC
+
+// Write 0b01 for 31 cycles
+header_start:
+    set pins, 0b01  side 1  [15] // 16 HC
+    nop             side 1  [15] // 16 HC
+    nop             side 1  [15] // 16 HC
+    nop             side 1  [13] // 14 HC
+                                 // \---> 62HC = 31 cycles
+
+// Write 0b11 for 1 cycle
+ready_bit:
+    set pins, 0b11  side 1  [ 1] // 2 HC = 1 cycle
+
+// Write the data, 2 bits at a time
+loop:
+    out pins, 2     side 1       // 1 HC
+    jmp !osre, loop side 1       // 1 HC
+                                 // \---> 2HC = 1 cycle
 .wrap
 
 % c-sdk {
 
-static inline void rmii_ethernet_phy_tx_init(PIO pio, uint sm, uint offset, uint pin) {
+static inline void rmii_ethernet_phy_tx_init(PIO pio, uint sm, uint offset, uint pin, uint div) {
     pio_gpio_init(pio, pin);
     pio_gpio_init(pio, pin + 1);
     pio_gpio_init(pio, pin + 2);
@@ -19,12 +43,14 @@ static inline void rmii_ethernet_phy_tx_init(PIO pio, uint sm, uint offset, uint
     pio_sm_set_consecutive_pindirs(pio, sm, pin, 3, true);
 
     pio_sm_config c = rmii_ethernet_phy_tx_data_program_get_default_config(offset);
-    sm_config_set_out_pins(&c, pin, 3);
+    sm_config_set_out_pins(&c, pin, 2);
+    sm_config_set_set_pins(&c, pin, 2);
+    sm_config_set_sideset_pins(&c, pin + 2);
     
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
-    sm_config_set_out_shift(&c, true, true, 3);
+    sm_config_set_out_shift(&c, true, true, 8);
 
-    sm_config_set_clkdiv(&c, 10);
+    sm_config_set_clkdiv(&c, div);
 
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);
