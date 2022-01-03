@@ -36,23 +36,23 @@ loop:
 
 % c-sdk {
 
-static inline void rmii_ethernet_phy_tx_init(PIO pio, uint sm, uint offset, uint pin, uint div) {
+static inline void rmii_ethernet_phy_tx_init(PIO pio, uint sm, uint offset, uint base_pin, uint retclk_pin, uint div) {
     // Set the TX_[0,1,EN] in PIO mode
     // Note: do not set RETCLK pin here, it's used as a clock output and only as an input in the PIO program
-    pio_gpio_init(pio, pin);
-    pio_gpio_init(pio, pin + 1);
-    pio_gpio_init(pio, pin + 2);
+    pio_gpio_init(pio, base_pin);
+    pio_gpio_init(pio, base_pin + 1);
+    pio_gpio_init(pio, base_pin + 2);
 
-    // Set pin 21 as input
-    pio_sm_set_pins_with_mask(pio, sm, 1<<21, 0<<21);
+    // Set RETCLK pin as input
+    pio_sm_set_pins_with_mask(pio, sm, 1<<retclk_pin, 0<<retclk_pin);
     // Set TX_[0,1,EN] as output
-    pio_sm_set_consecutive_pindirs(pio, sm, pin, 3, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, base_pin, 3, true);
 
     pio_sm_config c = rmii_ethernet_phy_tx_data_program_get_default_config(offset);
-    sm_config_set_in_pins(&c, 21);
-    sm_config_set_out_pins(&c, pin, 2);
-    sm_config_set_set_pins(&c, pin, 2);
-    sm_config_set_sideset_pins(&c, pin + 2);
+    sm_config_set_in_pins(&c, retclk_pin);
+    sm_config_set_out_pins(&c, base_pin, 2);
+    sm_config_set_set_pins(&c, base_pin, 2);
+    sm_config_set_sideset_pins(&c, base_pin + 2);
     
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
     sm_config_set_out_shift(&c, true, true, 8);

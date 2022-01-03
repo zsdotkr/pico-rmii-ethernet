@@ -23,14 +23,15 @@
 
 #include "rmii_ethernet/netif.h"
 
-#define PICO_RMII_ETHERNET_PIO      (rmii_eth_netif_config.pio)
-#define PICO_RMII_ETHERNET_SM_RX    (rmii_eth_netif_config.pio_sm_start)
-#define PICO_RMII_ETHERNET_SM_TX    (rmii_eth_netif_config.pio_sm_start + 1)
-#define PICO_RMII_ETHERNET_RX_PIN   (rmii_eth_netif_config.rx_pin_start)
-#define PICO_RMII_ETHERNET_TX_PIN   (rmii_eth_netif_config.tx_pin_start)
-#define PICO_RMII_ETHERNET_MDIO_PIN (rmii_eth_netif_config.mdio_pin_start)
-#define PICO_RMII_ETHERNET_MDC_PIN  (rmii_eth_netif_config.mdio_pin_start + 1)
-#define PICO_RMII_ETHERNET_MAC_ADDR (rmii_eth_netif_config.mac_addr)
+#define PICO_RMII_ETHERNET_PIO        (rmii_eth_netif_config.pio)
+#define PICO_RMII_ETHERNET_SM_RX      (rmii_eth_netif_config.pio_sm_start)
+#define PICO_RMII_ETHERNET_SM_TX      (rmii_eth_netif_config.pio_sm_start + 1)
+#define PICO_RMII_ETHERNET_RX_PIN     (rmii_eth_netif_config.rx_pin_start)
+#define PICO_RMII_ETHERNET_TX_PIN     (rmii_eth_netif_config.tx_pin_start)
+#define PICO_RMII_ETHERNET_MDIO_PIN   (rmii_eth_netif_config.mdio_pin_start)
+#define PICO_RMII_ETHERNET_MDC_PIN    (rmii_eth_netif_config.mdio_pin_start + 1)
+#define PICO_RMII_ETHERNET_RETCLK_PIN (rmii_eth_netif_config.retclk_pin)
+#define PICO_RMII_ETHERNET_MAC_ADDR   (rmii_eth_netif_config.mac_addr)
 
 static struct netif *rmii_eth_netif;
 static struct netif_rmii_ethernet_config rmii_eth_netif_config = NETIF_RMII_ETHERNET_DEFAULT_CONFIG();
@@ -333,7 +334,7 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif) {
     channel_config_set_transfer_data_size(&tx_dma_channel_config, DMA_SIZE_8);
 
     // Configure the RMII TX state machine
-    rmii_ethernet_phy_tx_init(PICO_RMII_ETHERNET_PIO, PICO_RMII_ETHERNET_SM_TX, tx_sm_offset, PICO_RMII_ETHERNET_TX_PIN, 1);
+    rmii_ethernet_phy_tx_init(PICO_RMII_ETHERNET_PIO, PICO_RMII_ETHERNET_SM_TX, tx_sm_offset, PICO_RMII_ETHERNET_TX_PIN, PICO_RMII_ETHERNET_RETCLK_PIN, 1);
 
     // Retrieve the LAN8720A address
     for (int i = 0; i < 32; i++) {
@@ -342,8 +343,6 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif) {
             break;
         }
     }
-
-    // netif_rmii_ethernet_mdio_write(phy_address, 0, 0x2000); // 10 Mbps, auto negeotiate disabled
 
     // Default mode is 10Mbps, auto-negociate disabled
     // Uncomment this to switch to 100Mbps, auto-negociate disabled
@@ -373,10 +372,13 @@ err_t netif_rmii_ethernet_init(struct netif *netif, struct netif_rmii_ethernet_c
         memcpy(&rmii_eth_netif_config, config, sizeof(rmii_eth_netif_config));
     }
 
+    // To set up a static IP, uncomment the folowing lines and comment the one using DHCP
     // const ip_addr_t ip = IPADDR4_INIT_BYTES(169, 254, 145, 200);
     // const ip_addr_t mask = IPADDR4_INIT_BYTES(255, 255, 0, 0);
     // const ip_addr_t gw = IPADDR4_INIT_BYTES(169, 254, 145, 164);
     // netif_add(netif, &ip, &mask, &gw, NULL, netif_rmii_ethernet_low_init, netif_input);
+
+    // Set up the interface using DHCP
     netif_add(netif, IP4_ADDR_ANY, IP4_ADDR_ANY, IP4_ADDR_ANY, NULL, netif_rmii_ethernet_low_init, netif_input);
 
     netif->name[0] = 'e';

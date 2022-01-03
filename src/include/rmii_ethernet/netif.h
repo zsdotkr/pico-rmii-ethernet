@@ -17,6 +17,7 @@ struct netif_rmii_ethernet_config {
     uint rx_pin_start; // RX0, RX1, CRS
     uint tx_pin_start; // TX0, TX1, TX-EN
     uint mdio_pin_start; // MDIO, MDC
+    uint retclk_pin; // RETCLK
     uint8_t *mac_addr; // 6 bytes
 };
 
