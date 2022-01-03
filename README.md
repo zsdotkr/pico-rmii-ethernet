@@ -41,3 +41,4 @@ See [examples](examples/) folder. [LWIP](https://www.nongnu.org/lwip/) is includ
 
 * Built-in LWIP stack is compiled with `NO_SYS` so LWIP Netcon and Socket API's are not enabled
 * Auto-negotiation to 10BASE-T is not supported
+* MDIO is bit-banged
