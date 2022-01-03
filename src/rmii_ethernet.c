@@ -253,18 +253,17 @@ static err_t netif_rmii_ethernet_output(struct netif *netif, struct pbuf *p)
         tx_frame[tot_len++] = ((uint8_t*)&crc)[i];
     }
 
-    printf("TX: ");
-    for (int i = 0; i < tot_len; i++) {
-        printf("%02b%02b%02b%02b", 
-            (tx_frame[i] >> 0) & 0b11,
-            (tx_frame[i] >> 2) & 0b11,
-            (tx_frame[i] >> 4) & 0b11,
-            (tx_frame[i] >> 6) & 0b11
-        );
-    }
-    printf("\n");
-
-    
+    // printf("TX\n");
+    // printf("TX: ");
+    // for (int i = 0; i < tot_len; i++) {
+    //     printf("%02b%02b%02b%02b", 
+    //         (tx_frame[i] >> 0) & 0b11,
+    //         (tx_frame[i] >> 2) & 0b11,
+    //         (tx_frame[i] >> 4) & 0b11,
+    //         (tx_frame[i] >> 6) & 0b11
+    //     );
+    // }
+    // printf("\n");
 
     // Setup and start the DMA to send the frame via the PIO RMII tansmitter
     dma_channel_configure(
@@ -334,7 +333,7 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif) {
     channel_config_set_transfer_data_size(&tx_dma_channel_config, DMA_SIZE_8);
 
     // Configure the RMII TX state machine
-    rmii_ethernet_phy_tx_init(PICO_RMII_ETHERNET_PIO, PICO_RMII_ETHERNET_SM_TX, tx_sm_offset, PICO_RMII_ETHERNET_TX_PIN, 10);
+    rmii_ethernet_phy_tx_init(PICO_RMII_ETHERNET_PIO, PICO_RMII_ETHERNET_SM_TX, tx_sm_offset, PICO_RMII_ETHERNET_TX_PIN, 1);
 
     // Retrieve the LAN8720A address
     for (int i = 0; i < 32; i++) {
@@ -374,6 +373,10 @@ err_t netif_rmii_ethernet_init(struct netif *netif, struct netif_rmii_ethernet_c
         memcpy(&rmii_eth_netif_config, config, sizeof(rmii_eth_netif_config));
     }
 
+    // const ip_addr_t ip = IPADDR4_INIT_BYTES(169, 254, 145, 200);
+    // const ip_addr_t mask = IPADDR4_INIT_BYTES(255, 255, 0, 0);
+    // const ip_addr_t gw = IPADDR4_INIT_BYTES(169, 254, 145, 164);
+    // netif_add(netif, &ip, &mask, &gw, NULL, netif_rmii_ethernet_low_init, netif_input);
     netif_add(netif, IP4_ADDR_ANY, IP4_ADDR_ANY, IP4_ADDR_ANY, NULL, netif_rmii_ethernet_low_init, netif_input);
 
     netif->name[0] = 'e';
@@ -381,7 +384,9 @@ err_t netif_rmii_ethernet_init(struct netif *netif, struct netif_rmii_ethernet_c
 }
 
 void netif_rmii_ethernet_poll() {
-    uint16_t link_status = (netif_rmii_ethernet_mdio_read(phy_address, 1) & 0x04) >> 2;
+    uint16_t mdio_read = netif_rmii_ethernet_mdio_read(phy_address, 1);
+    // printf("mdio_read: %016b\n", mdio_read);
+    uint16_t link_status = (mdio_read & 0x04) >> 2;
 
     if (netif_is_link_up(rmii_eth_netif) ^ link_status) {
         if (link_status) {
@@ -399,16 +404,17 @@ void netif_rmii_ethernet_poll() {
         uint rx_frame_length = ethernet_frame_length(rx_frame, sizeof(rx_frame));
 
         if (rx_frame_length) {
-            printf("RX: ");
-            for (int i = 0; i < rx_frame_length; i++) {
-                printf("%02b%02b%02b%02b", 
-                    (rx_frame[i] >> 0) & 0b11,
-                    (rx_frame[i] >> 2) & 0b11,
-                    (rx_frame[i] >> 4) & 0b11,
-                    (rx_frame[i] >> 6) & 0b11
-                );
-            }
-            printf("\n");
+            // printf("RX\n");
+            // printf("RX: ");
+            // for (int i = 0; i < rx_frame_length; i++) {
+            //     printf("%02b%02b%02b%02b", 
+            //         (rx_frame[i] >> 0) & 0b11,
+            //         (rx_frame[i] >> 2) & 0b11,
+            //         (rx_frame[i] >> 4) & 0b11,
+            //         (rx_frame[i] >> 6) & 0b11
+            //     );
+            // }
+            // printf("\n");
             
             // printf("RX: ");
             // for (int i = 0; i < rx_frame_length + 4; i++) {
@@ -437,7 +443,7 @@ void netif_rmii_ethernet_poll() {
 
         dma_channel_start(rx_dma_chan);
 
-        rmii_ethernet_phy_rx_init(PICO_RMII_ETHERNET_PIO, PICO_RMII_ETHERNET_SM_RX, rx_sm_offset, PICO_RMII_ETHERNET_RX_PIN, 10);
+        rmii_ethernet_phy_rx_init(PICO_RMII_ETHERNET_PIO, PICO_RMII_ETHERNET_SM_RX, rx_sm_offset, PICO_RMII_ETHERNET_RX_PIN, 1);
 
         gpio_set_irq_enabled_with_callback(PICO_RMII_ETHERNET_RX_PIN + 2, GPIO_IRQ_EDGE_FALL, true, &netif_rmii_ethernet_rx_dv_falling_callback);
     }

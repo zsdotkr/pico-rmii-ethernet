@@ -5,6 +5,12 @@
  */
 
 .program rmii_ethernet_phy_rx_data
+    wait 0 pin 2
+    wait 0 pin 0
+    wait 0 pin 1
+    wait 1 pin 2
+    wait 1 pin 0
+    wait 1 pin 1
 .wrap_target
     in pins, 2
 .wrap

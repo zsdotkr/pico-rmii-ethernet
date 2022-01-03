@@ -12,7 +12,8 @@
 
     // Wait for data to transmit
     set pins, 0b00      side 0
-    pull block          side 0       // min. 1 HC
+    pull block          side 0
+    wait 1 pin 0        side 0
 
 // Write 0b01 for 31 cycles
 header_start:
@@ -36,13 +37,19 @@ loop:
 % c-sdk {
 
 static inline void rmii_ethernet_phy_tx_init(PIO pio, uint sm, uint offset, uint pin, uint div) {
+    // Set the TX_[0,1,EN] in PIO mode
+    // Note: do not set RETCLK pin here, it's used as a clock output and only as an input in the PIO program
     pio_gpio_init(pio, pin);
     pio_gpio_init(pio, pin + 1);
     pio_gpio_init(pio, pin + 2);
 
+    // Set pin 21 as input
+    pio_sm_set_pins_with_mask(pio, sm, 1<<21, 0<<21);
+    // Set TX_[0,1,EN] as output
     pio_sm_set_consecutive_pindirs(pio, sm, pin, 3, true);
 
     pio_sm_config c = rmii_ethernet_phy_tx_data_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, 21);
     sm_config_set_out_pins(&c, pin, 2);
     sm_config_set_set_pins(&c, pin, 2);
     sm_config_set_sideset_pins(&c, pin + 2);
