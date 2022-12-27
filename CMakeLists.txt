@@ -51,6 +51,8 @@ target_sources(pico_lwip_n INTERFACE
     ${LWIP_PATH}/src/apps/http/httpd.c
     ${LWIP_PATH}/src/apps/http/fs.c
 
+    ${LWIP_PATH}/src/apps/lwiperf/lwiperf.c
+
     ${CMAKE_CURRENT_LIST_DIR}/src/lwip/sys_arch.c
 )
 
@@ -75,3 +77,4 @@ pico_generate_pio_header(pico_rmii_ethernet ${CMAKE_CURRENT_LIST_DIR}/src/rmii_e
 target_link_libraries(pico_rmii_ethernet INTERFACE hardware_pio hardware_dma pico_stdlib pico_unique_id pico_lwip_n)
 
 add_subdirectory("examples/httpd")
+add_subdirectory("examples/iperf")
