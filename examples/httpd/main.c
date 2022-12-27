@@ -38,7 +38,7 @@ int main() {
       6,    // rx pin start:   6, 7, 8    => RX0, RX1, CRS
       10,   // tx pin start:   10, 11, 12 => TX0, TX1, TX-EN
       14,   // mdio pin start: 14, 15   => ?MDIO, MDC
-      21,   // rmii clock:     21, 23, 24 or 25 => RETCLK
+      23,   // rmii clock:     21, 23, 24 or 25 => RETCLK
       NULL, // MAC address (optional - NULL generates one based on flash id)
   };
 

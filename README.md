@@ -42,7 +42,7 @@ We're generating the 50MHz RMII clock on the RP2040 instead of getting it from t
 | TX0 | any GPIO | 10 |
 | RX0 | any GPIO | 6 |
 | RX1 | RX0 + 1 | 7 |
-| nINT / RETCLK | 21/23/24/25 | 21 |
+| nINT / RETCLK | 21/23/24/25 | 23 |
 | CRS | RX0 + 2 | 8 |
 | MDIO | any GPIO | 14 |
 | MDC | MDIO + 1 | 15 |
