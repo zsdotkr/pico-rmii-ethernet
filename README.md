@@ -1,3 +1,9 @@
+# Under-Construction
+
+Enhanced version of RMII Ethernet MAC functionality for RP2040.
+* Complement RX pio to meet the RMII v1.2 CRS/DV characteristics
+* Optimize receiver-side code to handle burst packet
+
 # pico-rmii-ethernet
 
 Enable 100Mbit/s Ethernet connectivity on your [Raspberry Pi Pico](https://www.raspberrypi.org/products/raspberry-pi-pico/) with an RMII based Ethernet PHY module.
