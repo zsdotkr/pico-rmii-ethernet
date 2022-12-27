@@ -23,6 +23,9 @@
 
 #include "rmii_ethernet/netif.h"
 
+// ------------------------------ extern ------------------------------
+extern uint32_t fcs_crc32(const uint8_t *buf, int size);    // zs
+
 #define PICO_RMII_ETHERNET_PIO (rmii_eth_netif_config.pio)
 #define PICO_RMII_ETHERNET_SM_RX (rmii_eth_netif_config.pio_sm_start)
 #define PICO_RMII_ETHERNET_SM_TX (rmii_eth_netif_config.pio_sm_start + 1)
@@ -52,53 +55,27 @@ static uint8_t tx_frame[1518];
 
 static const uint32_t ethernet_polynomial_le = 0xedb88320U;
 
-static uint ethernet_frame_crc(const uint8_t *data, int length)
-{	uint crc = 0xffffffff; /* Initial value. */
+// zs, replace ethernet_frame_crc (bit base) to fcs_crc32 (byte base)
 
-	while (--length >= 0)
-	{	uint8_t current_octet = *data++;
+static uint ethernet_frame_length(const uint8_t *data, int length) // zs, replace to use byte base calculation
+{	extern const uint32_t crc32_tab[];
 
-		for (int bit = 8; --bit >= 0; current_octet >>= 1)
-		{	if ((crc ^ current_octet) & 1)
-			{	crc >>= 1;
-				crc ^= ethernet_polynomial_le;
-			}
-			else
-			{	crc >>= 1;
-			}
-		}
-	}
+    uint crc = 0xffffffff;  // Initial value.
+    uint index = 0;
 
-	return ~crc;
-}
+    while(--length >= 0)
+    {   crc = crc32_tab[(crc ^ *data++) & 0xFF] ^ (crc >> 8);
 
-static uint ethernet_frame_length(const uint8_t *data, int length)
-{	uint crc = 0xffffffff; /* Initial value. */
-	uint index = 0;
+        index++;
 
-	while (--length >= 0)
-	{	uint8_t current_octet = *data++;
+        uint inverted_crc = ~crc;
 
-		for (int bit = 8; --bit >= 0; current_octet >>= 1)
-		{	if ((crc ^ current_octet) & 1)
-			{	crc >>= 1;
-				crc ^= ethernet_polynomial_le;
-			}
-			else
-			{	crc >>= 1;
-			}
-		}
+        if (memcmp(data, &inverted_crc, sizeof(inverted_crc)) == 0) {
+            return index;
+        }
+    }
 
-		index++;
-
-		uint inverted_crc = ~crc;
-
-		if (memcmp(data, &inverted_crc, sizeof(inverted_crc)) == 0)
-		{	return index;
-		}
-	}
-
-	return 0;
+    return 0;
 }
 
 static void netif_rmii_ethernet_mdio_clock_out(int bit)
@@ -222,8 +199,7 @@ static err_t netif_rmii_ethernet_output(struct netif *netif, struct pbuf *p)
 	// TODO: use a ping-pong buffer ?
 	dma_channel_wait_for_finish_blocking(tx_dma_chan);
 
-	// Clean up the buffer
-	memset(tx_frame, 0x00, sizeof(tx_frame));
+	// zs, useless memset(tx_frame, 0x00, sizeof(tx_frame));
 
 	// Retrieve the data to send and copy in TX buffer
 	// TODO: check for overflow?
@@ -238,23 +214,12 @@ static err_t netif_rmii_ethernet_output(struct netif *netif, struct pbuf *p)
 
 	// Minimal Ethernet payload is 64 bytes, 4-bytes CRC included
 	// Pad the payload to 64-4=60 bytes, and then add the CRC
+	// TODO-zs : may need to fill zero for padding data area
 	if (tot_len < 60)	{	tot_len = 60;	}
 
 	// Append the CRC to the frame
-	uint crc = ethernet_frame_crc(tx_frame, tot_len);
+	uint crc = fcs_crc32(tx_frame, tot_len);	// zs, replace ethernet_frame_crc
 	for (int i = 0; i < 4; i++)	{	tx_frame[tot_len++] = ((uint8_t *)&crc)[i];	}
-
-	// printf("TX\n");
-	// printf("TX: ");
-	// for (int i = 0; i < tot_len; i++) {
-	//     printf("%02b%02b%02b%02b",
-	//         (tx_frame[i] >> 0) & 0b11,
-	//         (tx_frame[i] >> 2) & 0b11,
-	//         (tx_frame[i] >> 4) & 0b11,
-	//         (tx_frame[i] >> 6) & 0b11
-	//     );
-	// }
-	// printf("\n");
 
 	// Setup and start the DMA to send the frame via the PIO RMII tansmitter
 	dma_channel_configure(

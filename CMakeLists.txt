@@ -65,6 +65,7 @@ add_library(pico_rmii_ethernet INTERFACE)
 
 target_sources(pico_rmii_ethernet INTERFACE
     ${CMAKE_CURRENT_LIST_DIR}/src/rmii_ethernet.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/fcs.c
 )
 
 target_include_directories(pico_rmii_ethernet INTERFACE
