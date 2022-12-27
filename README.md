@@ -4,6 +4,16 @@ Enhanced version of RMII Ethernet MAC functionality for RP2040.
 * Complement RX pio to meet the RMII v1.2 CRS/DV characteristics
 * Optimize receiver-side code to handle burst packet
 
+## Compile
+1. Fork or clone this repository and move to top directory
+1. Run `git submodule update --init --recursive` to clone `lib/lwip` repository source
+1. Create `build` directory and move to it
+1. Run `cmake ..`
+1. Change `pico_lwip` to `lwip_pico_n` in CMakeLists.txt if you meet `add_library cannot create target 'pico_lwip' ...` error while running `cmake ..`
+1. Run `make` (at `build` directory)
+
+
+
 # pico-rmii-ethernet
 
 Enable 100Mbit/s Ethernet connectivity on your [Raspberry Pi Pico](https://www.raspberrypi.org/products/raspberry-pi-pico/) with an RMII based Ethernet PHY module.
