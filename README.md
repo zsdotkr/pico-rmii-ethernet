@@ -4,6 +4,22 @@ Enhanced version of RMII Ethernet MAC functionality for RP2040.
 * Complement RX pio to meet the RMII v1.2 CRS/DV characteristics
 * Optimize receiver-side code to handle burst packet
 
+
+## Issues in original repository
+RMII RX side SM is incomplete to meet CRS/DV pattern of RMII V1.2
+* Most Ethernet PHY adopt RMII V1.2
+* LAN8720 also seems to adopt RMII v1.2 even though it does not mention it in datasheet
+* CRS/DV output can be toggled at end of frame if RMII v1.2 is adopted
+![image](doc/crsdv.jpg)
+* CRS/DV toggling occur more frequently with larger frames or higher frame rates.
+* So, ***Using CRS/DV as an interrupt source to determine the end-of-frame*** in original repo is inadequate
+* Refer [AN-1405 from TI] for more details about characteristics of CRS/DV
+* Original Implementation also has packet loss when test with `ping RP2040_IP -s 1450 -i 0.1`
+
+[AN-1405 from TI]: https://www.ti.com/lit/an/snla076a/snla076a.pdf?ts=1672269799540&ref_url=https%253A%252F%252Fwww.google.com%252F
+
+
+
 ## Compile
 1. Fork or clone this repository and move to top directory
 1. Run `git submodule update --init --recursive` to clone `lib/lwip` repository source
