@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Sandeep Mistry
+ * Copyright (c) 2023 zsdotkr@gmail.com
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -13,6 +13,7 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "pico/unique_id.h"
+#include "pico/sem.h"			// use semaphore to inform Ethernet RX event
 
 #include "lwip/etharp.h"
 #include "lwip/netif.h"
@@ -23,16 +24,21 @@
 
 #include "rmii_ethernet/netif.h"
 
+#include "profile.h"
+
 // ------------------------------------------------------------------
 // - Debug
 // ------------------------------------------------------------------
 #define DBG(x, y...)	printf(x "\n", ##y)
 #define LOG(x, y...)	printf(x "\n", ##y)
 
+#define likely(x)		__builtin_expect((x),1)
+#define unlikely(x)		__builtin_expect((x),0)
+
 // ------------------------------------------------------------------
 // - extern
 // ------------------------------------------------------------------
-extern uint32_t fcs_crc32(const uint8_t *buf, int size);    // zs
+extern uint32_t fcs_crc32(const uint8_t *buf, int size);	// byte based crc32 calculation
 
 // ------------------------------------------------------------------
 // - Static Vars
@@ -59,10 +65,31 @@ static int 					s_tx_dma_chn;		// DMA channel number for TX SM
 static dma_channel_config 	s_rx_dma_chn_cfg;	// DMA channel configuration for RX SM
 static dma_channel_config 	s_tx_dma_chn_cfg;	// DMA channel configuration for TX SM
 
-static uint8_t 				s_rx_frame[1518];	// temporary buffer for RX side DMA
-static uint8_t 				s_tx_frame[1518];	// temporary buffer for TX side DMA
+// ----- buffer for RMII RX
+#define ETH_FRAME_LEN		(1514+4+6)			// 1514(MAC ~ payload) + 4(FCS) + 6(reserved for data boundary guard or VLAN??)
+#define MAX_RX_FRAME		4					// 4 frame needs for iperf/TCP test (21Mbps), adjust as your application needs
+static int 					s_rx_frame_head;	// updated in ISR code
+static int 					s_rx_frame_rear;	// updated in netif_rmii_ethernet_poll()
+typedef struct
+{	int						len;				// length of data
+	uint8_t 				data[ETH_FRAME_LEN];
+} rx_frame_t;
+static rx_frame_t			s_rx_frame[MAX_RX_FRAME];	// buffer between RX-SM ~ DMA
+
+static semaphore_t			s_rx_frame_sem;		// to trigger packet receiving event from ISR code to netif_rmii_ethernet_poll()
 
 static int 					s_phy_addr = 0;		// LAN8720A PHY Address (auto-detected)
+
+// ----- etc
+#define time_after(now, expire) (((int32_t)(expire) - (int32_t)(now)) < 0) //  return 1(now > expire), 0 (now < expire)
+
+// ----- profile & statistics
+rmii_sm_stat_declare(s_sm_stat);
+timelapse_declare(tl_crc, "CRC");
+timelapse_declare(tl_rx, "RX");
+timelapse_declare(tl_tx, "TX");
+timelapse_declare(tl_net, "NET");
+
 
 // ------------------------------------------------------------------
 // - MDIO bit-bang
@@ -181,8 +208,8 @@ void netif_rmii_ethernet_mdio_write(int addr, int reg, int val)
 // ------------------------------------------------------------------
 // - Ethernet FCS
 // ------------------------------------------------------------------
-// zs, replace ethernet_frame_crc (bit base) to fcs_crc32 (byte base)
 
+#if 0 // zs, useless, code to search end-of-frame using calculated CRC but already know the packet length
 static uint ethernet_frame_length(const uint8_t *data, int length) // zs, replace to use byte base calculation
 {	extern const uint32_t crc32_tab[];
 
@@ -203,23 +230,25 @@ static uint ethernet_frame_length(const uint8_t *data, int length) // zs, replac
 
     return 0;
 }
+#endif
 
 // ------------------------------------------------------------------
 // - Ethernet Tx
 // ------------------------------------------------------------------
 
 static err_t netif_rmii_ethernet_output(struct netif *netif, struct pbuf *p)
-{	// Wait until the buffer is again available
-	// TODO: use a ping-pong buffer ?
+{	// TODO: use a ping-pong buffer ? => zs, No. meaningless. tested
+
+	static uint8_t	tx_frame[ETH_FRAME_LEN];	// MUST be static, accessed by DMA at background
+
+	timelapse_start(tl_tx);
+
 	dma_channel_wait_for_finish_blocking(s_tx_dma_chn);
 
-	// zs, useless memset(s_tx_frame, 0x00, sizeof(s_tx_frame));
-
-	// Retrieve the data to send and copy in TX buffer
-	// TODO: check for overflow?
+	// assemble fragmented pbufs to a single buffer for DMA access
 	uint tot_len = 0;
 	for (struct pbuf *q = p; q != NULL; q = q->next)
-	{	memcpy(s_tx_frame + tot_len, q->payload, q->len);
+	{	memcpy(tx_frame + tot_len, q->payload, q->len);
 
 		tot_len += q->len;
 
@@ -228,22 +257,143 @@ static err_t netif_rmii_ethernet_output(struct netif *netif, struct pbuf *p)
 
 	// Minimal Ethernet payload is 64 bytes, 4-bytes CRC included
 	// Pad the payload to 64-4=60 bytes, and then add the CRC
-	// TODO-zs : may need to fill zero for padding data area
+	// TODO-zs : may need to fill zero for padding data area ??
 	if (tot_len < 60)	{	tot_len = 60;	}
 
 	// Append the CRC to the frame
-	uint crc = fcs_crc32(s_tx_frame, tot_len);	// zs, replace ethernet_frame_crc
-	for (int i = 0; i < 4; i++)	{	s_tx_frame[tot_len++] = ((uint8_t *)&crc)[i];	}
+	timelapse_start(tl_crc);
+	uint crc = fcs_crc32(tx_frame, tot_len);	// zs, replace ethernet_frame_crc
+	for (int i = 0; i < 4; i++)	{	tx_frame[tot_len++] = ((uint8_t *)&crc)[i];	}
+	timelapse_stop(tl_crc);
 
 	// Setup and start the DMA to send the frame via the PIO RMII tansmitter
 	dma_channel_configure(
 		s_tx_dma_chn, &s_tx_dma_chn_cfg,
 		((uint8_t *)&PICO_RMII_PIO->txf[PICO_RMII_SM_TX]) + 3,
-		s_tx_frame,
+		tx_frame,
 		tot_len,
 		true);
 
+	rmii_sm_stat_add(s_sm_stat.tx_ok, 1);
+	timelapse_stop(tl_tx);
+
 	return ERR_OK;
+}
+
+// ------------------------------------------------------------------
+// - Ethernet Rx
+// ------------------------------------------------------------------
+
+void __time_critical_func(rx_sm_isr_handler) (void)
+{	// MUST declare '__time_critical_func' (to to locate code in RAM, performance severely degraded if not)
+
+	// order DMA abort (upper side of dma_channel_abort()), MUST be called to change buffer address of DMA
+	dma_hw->abort = 1u << s_rx_dma_chn;
+
+	uint32_t	offset = dma_channel_hw_addr(s_rx_dma_chn)->write_addr;
+	int 		next = (s_rx_frame_head != (MAX_RX_FRAME-1)) ? s_rx_frame_head + 1 : 0;
+
+	// run some codes while DMA abort completed (need several clocks)
+	if (next == s_rx_frame_rear) // rx buffer full
+	{	next = s_rx_frame_head;
+		rmii_sm_stat_add(s_sm_stat.rx_full, 1);
+	}
+
+	// check abort completion (lower side of dma_channel_abort())
+	while (dma_hw->ch[s_rx_dma_chn].ctrl_trig & DMA_CH0_CTRL_TRIG_BUSY_BITS)
+	{	tight_loop_contents();	}
+
+	// clear irq #3 to inform rx-sm to wrap around (and wait preamble)
+	pio0->irq |= (0x01 << 3);
+
+	// prepare DMA
+	dma_channel_set_write_addr(s_rx_dma_chn, s_rx_frame[next].data, false);
+	dma_channel_set_trans_count(s_rx_dma_chn, sizeof(s_rx_frame[0].data), true);
+
+	if (next != s_rx_frame_head)
+	{	uint32_t start = (uint32_t)s_rx_frame[s_rx_frame_head].data;
+		s_rx_frame[s_rx_frame_head].len = offset - start;
+
+		s_rx_frame_head = next;
+
+		sem_release(&s_rx_frame_sem);
+
+		rmii_sm_stat_add(s_sm_stat.rx_ok, 1);
+		// DBG("ISR H/R %d %d", s_rx_frame_head, s_rx_frame_rear);
+	}
+}
+
+void netif_rmii_ethernet_poll()
+{	static uint32_t		mdio_poll_expire = 0;
+
+	{	uint32_t	now = time_us_32();
+		if (time_after(now, mdio_poll_expire))
+		{	uint16_t mdio_read = netif_rmii_ethernet_mdio_read(s_phy_addr, 1);
+			uint16_t link_status = (mdio_read & 0x04) >> 2;
+
+			if (netif_is_link_up(s_rmii_if) ^ link_status)
+			{	// TODO need control stop/start SM/DMA ??
+				if (link_status)	{	netif_set_link_up(s_rmii_if);	}
+				else				{	netif_set_link_down(s_rmii_if);	}
+			}
+			mdio_poll_expire = now + (1000*1000); 	// 1sec interval
+
+			rmii_sm_stat_prt(&s_sm_stat);
+			rmii_sm_stat_clr(s_sm_stat);
+
+			timelapse_prt();
+		}
+	}
+
+	if (sem_acquire_timeout_ms(&s_rx_frame_sem, 100) == true)
+	{	timelapse_start(tl_rx);
+
+		rx_frame_t* pframe = &s_rx_frame[s_rx_frame_rear];
+
+		uint32_t	*crc_in = (uint32_t*)(&pframe->data[pframe->len - 4]);
+		timelapse_start(tl_crc);
+		uint32_t	crc_calc = fcs_crc32(pframe->data, pframe->len - 4);
+		timelapse_stop(tl_crc);
+
+		int		rx_len;
+
+		if (memcmp(&crc_calc, crc_in, 4) == 0)	{	rx_len = pframe->len - 4; }
+		else									{	rx_len = 0;	}
+
+		// DBG("RXD H/R %d %d", s_rx_frame_head, s_rx_frame_rear);
+
+		if (unlikely(rx_len == 0))
+		{	rmii_sm_stat_add(s_sm_stat.bad_crc, 1);
+			s_rx_frame_rear = (s_rx_frame_rear != (MAX_RX_FRAME-1)) ? s_rx_frame_rear + 1 : 0;
+		}
+		else
+		{	struct pbuf *p = pbuf_alloc(PBUF_RAW, rx_len, PBUF_POOL);
+
+			if (unlikely(p == NULL))
+			{	rmii_sm_stat_add(s_sm_stat.pbuf_empty, 1);
+				s_rx_frame_rear = (s_rx_frame_rear != (MAX_RX_FRAME-1)) ? s_rx_frame_rear + 1 : 0;
+			}
+			else
+			{	if (pbuf_take(p, pframe->data, rx_len) == ERR_OK)
+				{	// update rear indicator befre time-consuming input() job
+					s_rx_frame_rear = (s_rx_frame_rear != (MAX_RX_FRAME-1)) ? s_rx_frame_rear + 1 : 0;
+
+					timelapse_start(tl_net);
+					if (unlikely(s_rmii_if->input(p, s_rmii_if) != ERR_OK))
+					{	rmii_sm_stat_add(s_sm_stat.pbuf_err, 1);
+						pbuf_free(p);
+					}
+					timelapse_stop(tl_net);
+				}
+				else
+				{	rmii_sm_stat_add(s_sm_stat.pbuf_err, 1);
+					s_rx_frame_rear = (s_rx_frame_rear != (MAX_RX_FRAME-1)) ? s_rx_frame_rear + 1 : 0;
+				}
+			}
+		}
+		timelapse_stop(tl_rx);
+	}
+	sys_check_timeouts();
 }
 
 // ------------------------------------------------------------------
@@ -251,7 +401,7 @@ static err_t netif_rmii_ethernet_output(struct netif *netif, struct pbuf *p)
 // ------------------------------------------------------------------
 
 static err_t netif_rmii_ethernet_low_init(struct netif *netif)
-{	// Prepare the interface
+{
 	s_rmii_if = netif;
 
 	netif->linkoutput = netif_rmii_ethernet_output;
@@ -263,9 +413,8 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif)
 	if (PICO_RMII_MAC_ADDR != NULL)
 	{	memcpy(netif->hwaddr, PICO_RMII_MAC_ADDR, 6);
 	}
-	else
-	{	// generate one for unique board id
-		pico_unique_board_id_t board_id;
+	else // generate one for unique board id
+	{	pico_unique_board_id_t board_id;
 
 		pico_get_unique_board_id(&board_id);
 
@@ -275,6 +424,14 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif)
 		memcpy(&netif->hwaddr[3], &board_id.id[5], 3);
 	}
 	netif->hwaddr_len = ETH_HWADDR_LEN;
+	DBG("MAC : %02x:%02x:%02x:%02x:%02x:%02x",
+		netif->hwaddr[0], netif->hwaddr[1], netif->hwaddr[2],
+		netif->hwaddr[3], netif->hwaddr[4], netif->hwaddr[5]);
+
+	// Init s_rx_frame & semaphore
+	s_rx_frame_head = s_rx_frame_rear = 0;
+	for (int i = 0; i < MAX_RX_FRAME; i++)	{	s_rx_frame[i].len = 0;	}
+	sem_init(&s_rx_frame_sem, 0, MAX_RX_FRAME * 2);
 
 	// Init the RMII PIO programs
 	s_rx_sm_off = pio_add_program(PICO_RMII_PIO, &rmii_ethernet_phy_rx_data_program);
@@ -297,9 +454,6 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif)
 	channel_config_set_write_increment(&s_tx_dma_chn_cfg, false);
 	channel_config_set_dreq(&s_tx_dma_chn_cfg, pio_get_dreq(PICO_RMII_PIO, PICO_RMII_SM_TX, true));
 	channel_config_set_transfer_data_size(&s_tx_dma_chn_cfg, DMA_SIZE_8);
-
-	// Configure the RMII TX state machine
-	rmii_ethernet_phy_tx_init(PICO_RMII_PIO, PICO_RMII_SM_TX, s_tx_sm_off, PICO_RMII_TX_PIN, PICO_RMII_RETCLK_PIN, 1);
 
 	// Auto-Detection LAN8720A PHY address
 	for (int i = 0; i < 32; i++)
@@ -329,71 +483,25 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif)
 	// Enable auto-negotiate
 	netif_rmii_ethernet_mdio_write(s_phy_addr, LAN8720A_BASIC_CONTROL_REG, 0x1000);
 
+	// Configure & Start RX DMA
+	dma_channel_configure(
+		s_rx_dma_chn, &s_rx_dma_chn_cfg,
+		s_rx_frame[0].data,
+		((uint8_t*)&PICO_RMII_PIO->rxf[PICO_RMII_SM_RX]) + 3,
+		sizeof(s_rx_frame[0].data),
+		true
+	);
+
+	// Install ISR #3 callback for RX-SM
+	irq_set_exclusive_handler(PIO0_IRQ_0, rx_sm_isr_handler);
+    irq_set_enabled(PIO0_IRQ_0, true);
+    pio0->inte0 = (PIO_IRQ0_INTE_SM0_BITS<<3); // IRQ = 3
+
+	// Configure & Start the RMII SM
+	rmii_ethernet_phy_tx_init(PICO_RMII_PIO, PICO_RMII_SM_TX, s_tx_sm_off, PICO_RMII_TX_PIN, PICO_RMII_RETCLK_PIN, 1);
+	rmii_ethernet_phy_rx_init(PICO_RMII_PIO, PICO_RMII_SM_RX, s_rx_sm_off, PICO_RMII_RX_PIN, 1);
+
 	return ERR_OK;
-}
-
-// ------------------------------------------------------------------
-// - Ethernet Rx
-// ------------------------------------------------------------------
-
-static void netif_rmii_ethernet_rx_dv_falling_callback(uint gpio, uint32_t events)
-{	if ((PICO_RMII_RX_PIN + 2) == gpio)
-	{
-		pio_sm_set_enabled(PICO_RMII_PIO, PICO_RMII_SM_RX, false);
-		dma_channel_abort(s_rx_dma_chn); // dma_hw->abort = 1u << s_rx_dma_chn;
-		gpio_set_irq_enabled_with_callback(PICO_RMII_RX_PIN + 2, GPIO_IRQ_EDGE_FALL, false, netif_rmii_ethernet_rx_dv_falling_callback);
-	}
-}
-
-void netif_rmii_ethernet_poll()
-{	uint16_t mdio_read = netif_rmii_ethernet_mdio_read(s_phy_addr, 1);
-	// printf("mdio_read: %016b\n", mdio_read);
-	uint16_t link_status = (mdio_read & 0x04) >> 2;
-
-	if (netif_is_link_up(s_rmii_if) ^ link_status)
-	{	if (link_status)
-		{	// printf("netif_set_link_up\n");
-			netif_set_link_up(s_rmii_if);
-		}
-		else
-		{	// printf("netif_set_link_down\n");
-			netif_set_link_down(s_rmii_if);
-		}
-	}
-
-	if (dma_channel_is_busy(s_rx_dma_chn))
-	{
-	}
-	else
-	{	uint rx_frame_length = ethernet_frame_length(s_rx_frame, sizeof(s_rx_frame));
-
-		if (rx_frame_length)
-		{	struct pbuf *p = pbuf_alloc(PBUF_RAW, rx_frame_length, PBUF_POOL);
-
-			pbuf_take(p, s_rx_frame, rx_frame_length);
-
-			if (s_rmii_if->input(p, s_rmii_if) != ERR_OK)
-			{	pbuf_free(p);
-			}
-		}
-
-		memset(s_rx_frame, 0x00, sizeof(s_rx_frame));
-
-		dma_channel_configure(
-			s_rx_dma_chn, &s_rx_dma_chn_cfg,
-			s_rx_frame,
-			((uint8_t *)&PICO_RMII_PIO->rxf[PICO_RMII_SM_RX]) + 3,
-			1500,
-			false);
-
-		dma_channel_start(s_rx_dma_chn);
-
-		rmii_ethernet_phy_rx_init(PICO_RMII_PIO, PICO_RMII_SM_RX, s_rx_sm_off, PICO_RMII_RX_PIN, 1);
-
-		gpio_set_irq_enabled_with_callback(PICO_RMII_RX_PIN + 2, GPIO_IRQ_EDGE_FALL, true, &netif_rmii_ethernet_rx_dv_falling_callback);
-	}
-
-	sys_check_timeouts();
 }
 
 void netif_rmii_ethernet_loop()
@@ -421,4 +529,23 @@ err_t netif_rmii_ethernet_init(struct netif *netif, struct netif_rmii_ethernet_c
 
 	netif->name[0] = 'e';
 	netif->name[1] = '0';
+
+	timelapse_link(tl_crc);
+	timelapse_link(tl_net);
+	timelapse_link(tl_rx);
+	timelapse_link(tl_tx);
 }
+
+// simple profile with `ping IP -f -s 1460`
+// (enable USE_TIMELAPSE, disable USE_RMII_SM_STAT)
+// TX = 312usec = CRC (283usec, 91%) + other (29usec)
+// RX = 736usec = CRC (283usec, 38%) + LwIP (469, 64%) + other (-16usec, 0%)
+// TX R/N/X 762 254 416 RX R/N/X 762 639 894 NET R/N/X 762 391 597 CRC R/N/X 1524 225 385
+// TX R/N/X 766 253 386 RX R/N/X 766 635 873 NET R/N/X 766 389 577 CRC R/N/X 1532 225 355
+// TX R/N/X 748 253 406 RX R/N/X 748 638 874 NET R/N/X 748 391 588 CRC R/N/X 1496 225 378
+// TX R/N/X 765 253 327 RX R/N/X 765 638 775 NET R/N/X 765 390 496 CRC R/N/X 1530 225 300
+// TX R/N/X 763 255 316 RX R/N/X 763 639 757 NET R/N/X 763 393 481 CRC R/N/X 1526 225 290
+// AVERAGE  761 254 370          761 638 835           761 391 548           1522 225 342
+//               |___|                |___|                 |___|                  |___|
+//                 |                    |                     |                      |
+// AVERAGE        312                  736                   469                    283

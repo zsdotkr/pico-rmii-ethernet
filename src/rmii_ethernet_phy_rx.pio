@@ -1,19 +1,45 @@
 /*
- * Copyright (c) 2021 Sandeep Mistry
+ * Copyright (c) 2023 zsdotkr@gmail.com
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-.program rmii_ethernet_phy_rx_data
-	wait 0 pin 2
-	wait 0 pin 0
-	wait 0 pin 1
-	wait 1 pin 2
-	wait 1 pin 0
-	wait 1 pin 1
+.program rmii_ethernet_phy_rx_data	; Must be run at 100MHz
+
 .wrap_target
+	; ----- [STEP_A] check IDLE with CRS/DV
+	wait 0 pin 2 [1]
+	wait 0 pin 2 [1] 	; two consecutive "CRS/DV=Low" means RX is idle
+	wait 0 pin 0 [1]	; check RXD[1:0] are also idle
+	wait 0 pin 1 [1]	; check RXD[1:0] are also idle
+
+	; ----- [STEP_B] check preamble
+	wait 1 pin 2 [2]
+	wait 1 pin 0 [1]
+
+	; ----- [STEP_C] check last bit of SFD (RXD[1:0] = 11b)
+	wait 1 pin 1 [1]
+
+	; ----- [STEP_D] receiving data, CRSDV=H
+crsdv_h:
+	in pins, 2 			; push RX[1:0] to ISR
+	jmp pin crsdv_h		; JUMP_PIN = CRSDV, see rmii_ethernet_phy_rx_init()
+
+	; ----- [STEP_E] push 2 bits, CRSDV=L (assume CRSDV will be re-triggering at next cycle, RMII v1.2)
+	in pins, 2 [1] 		; push RX[1:0] to ISR
+
+	; ----- [STEP-F] loop if CRSDV is retriggered (RMII v1.2)
 	in pins, 2
-.wrap
+	jmp pin crsdv_h
+
+	; ----- [STEP-G] clearing ISR (4 bits will remain in ISR if CRSDV is not re-triggered)
+	mov isr, y			; move data to isr make isr to reset its shift-counter
+
+	; ----- [STEP-H] raise ISR #3 to inform end-of-frame and wait for ISR to clear
+	;                (ISR code should clear ISR after preparing next DMA buffer)
+	irq wait 3
+.wrap	; return to [STEP-A], new DMA buffer is ready!
+
 
 % c-sdk {
 
@@ -27,10 +53,12 @@ static inline void rmii_ethernet_phy_rx_init(PIO pio, uint sm, uint offset, uint
 	pio_gpio_init(pio, pin + 1);
 	pio_gpio_init(pio, pin + 2);
 
+	sm_config_set_jmp_pin(&c, pin+2); 	// jump pin = CRSDV
+
 	sm_config_set_in_shift(&c, true, true, 8);
 	sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
 
-	sm_config_set_clkdiv(&c, div*2); // Running twice as fast as the TX PIO SM
+	sm_config_set_clkdiv(&c, div);	// clock frequency should be 100MHz
 
 	pio_sm_init(pio, sm, offset, &c);
 	pio_sm_set_enabled(pio, sm, true);
