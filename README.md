@@ -27,10 +27,10 @@
 
 [AN-1405 from TI]: https://www.ti.com/lit/an/snla076a/snla076a.pdf?ts=1672269799540&ref_url=https%253A%252F%252Fwww.google.com%252F
 
-## <U>Test result after improvement</U>
+## <U>Test result after implementation</U>
 #### Test environment
 * Test server : Ubuntu 22.0.4 LTS / VirtualBox
-* Server side ethernet : ASIX AX88179 10/100Mbps USB/Ethenet dongle + USB 2.0 Hub
+* Server side ethernet : ASIX AX88179 10/100Mbps USB/Ethenet dongle + USB 2.0 Hub + USB 3.0 Port (Windows PC)
 * USB Controller setting at Virtualbox : USB 3.0
     * Speed per USB version : 10Mbps (USB 1.0), 480Mbps (USB 2.0), 4.8Gbps (USB 3.0)
 
@@ -50,7 +50,7 @@
     * And, there is no way to control DMA directly at pio SM
     * ***"960nsec or packet interval at TCP/kernel" is too short*** to cover with single DMA buffer in ISR callback running at RP2040/100MHz
 
-    * Therefore, more than half of the frames are discarded silently at the receiver side SM without notice in `(4 * TCP_MSS)` condition (You can check this situation if you check wireshark after turn on TCP_SACK option in LwIP TCP stack)
+    * Therefore, more than half of the frames are discarded silently at the receiver side SM without notice in `(4 * TCP_MSS)` condition (You can see what happens with wireshark after turn on TCP_SACK option in LwIP TCP stack)
 
 * TCP_WND modification : Change below `#define` in `lib/lwip/src/include/lwip/opt.h`
     ```c
@@ -92,7 +92,7 @@
     ```
 
 ## <U>Compile</U>
-1. Move to top directory after Fork or clone this repository
+1. Move to top directory after fork or clone this repository
 1. Run `git submodule update --init --recursive` to update `lib/lwip` repository source
 1. Create `build` directory and move to it
 1. Run `cmake ..`
@@ -117,19 +117,19 @@
 1. Run `make` (at `build` directory)
 1. Copy uf2 file to your RP2040
     * use `examples/iperf/pico_rmii_ethernet_iperf.uf2` for iperf test
-    * use `examples/httpd/pico_rmii_ethernet_iperf.uf2` for http server test
+    * use `examples/httpd/pico_rmii_ethernet_httpd.uf2` for http server test
 
 ## <U>Hardware</U>
 
-* [YD-RP2040] or [RP2040]
+* [YD-RP2040] or [RP2040] (YD-RP2040 is not pin-compatible with official RP2040)
 * Any RMII based Ethernet PHY module, such as the [Waveshare LAN8720 ETH Board](https://www.waveshare.com/lan8720-eth-board.htm)
 
-* Use ***as short a cable as possible*** between the RP2040 and the PHY module (the cable should carry 50MHz rate).
+* Use ***as short a cable as possible*** between the RP2040 and the PHY module (the cable carry signal at 50MHz rate).
 
 [RP2040]: https://www.raspberrypi.org/products/raspberry-pi-pico/
 [YD-RP2040]: https://ko.aliexpress.com/item/1005004004120604.html
 
-## <U>Modification to do at PHY module</U>
+### Modification to do at PHY module
 
 ![image](https://user-images.githubusercontent.com/159235/147747551-1fca8e2f-e9c8-4833-9947-0a49e2bda6a9.png)
 ![schematic](https://user-images.githubusercontent.com/159235/147748051-1d8e7100-147f-4f92-9b2f-91e2398c6e03.jpg)
@@ -139,7 +139,7 @@ We're generating the 50MHz RMII clock on the RP2040 instead of getting it from t
 
 ### Wiring
 
-| RMII Module | Raspberry Pi Pico | Library Default |
+| RMII Module | Raspberry Pi Pico | Repository Code Default |
 | ----------- | ----------------- | --------------- |
 | TX1 | TX0 + 1 | 11 |
 | TX-EN | TX0 + 2 | 12 |
@@ -153,12 +153,32 @@ We're generating the 50MHz RMII clock on the RP2040 instead of getting it from t
 | VCC | 3V3 | |
 | GND | GND | |
 
-## Examples
+## <U>Examples</U>
 
-See [examples](examples/) folder. [LWIP](https://www.nongnu.org/lwip/) is included as the TCP/IP stack.
+See [examples](examples/httpd) folder for simple http server
+See [iperf](examples/iperf) folder using default iperf TCP server code of LwIP for performance test
 
 # Current Limitations
 
 * Built-in LWIP stack is compiled with `NO_SYS` so LWIP Netcon and Socket API's are not enabled
 * Auto-negotiation to 10BASE-T is not supported
 * MDIO is bit-banged
+
+# For further development
+#### Ring style DMA (chain_to RX-DATA-DMA & RX-CONTROL-DMA)
+* Maybe required to overcome Rx limitation caused by "single DMA buffer in RX SM".
+* but... The processing time to separate packets is not negligible (need about 2/3 of CRC32 calculation load in my test)
+* Eventually, CRC and segmentation overhead take more load. Is it reasonable?
+
+#### Offload CRC32 calculation load with Hardware CRC32 engine
+* RP2040 has a hardware CRC calculation engine for DMA named 'sniff'
+* CRC calculation load will be lowered if it is implementable
+* But... I don't know detail of 'sniff' yet..   ;)
+
+#### Overclocking to 200MHz
+* Some developers are posting how to overclock the RP2040
+* Overclock to 200MHz may double the overall throughput enhancement with minimal changes
+* but.. ensuring overclocked hardware is a problem
+
+
+
