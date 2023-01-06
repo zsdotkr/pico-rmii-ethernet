@@ -36,6 +36,7 @@
 
 #### Unidirectional bandwidth/performance test with iperf/TCP
 * Run `iperf -c RP2040_IP` from linux server (test duration : 10sec)
+* Test Condition : enable TCP_SACK, adjust TCP_WND (see below)
 * Test result are as follows:
 
     | TCP_WND | Transfer (MBytes) | Bandiwdth (Mbps) | Comment |
@@ -63,6 +64,17 @@
     #define TCP_WND                         (2 * TCP_MSS) // <== here
     #endif
     ```
+
+* enable TCP_SACK : Change below `#define` in `lib/lwip/src/include/lwip/opt.h`
+    ```c
+    /**
+     * LWIP_TCP_SACK_OUT==1: TCP will support sending selective acknowledgements (SACKs).
+    */
+    #if !defined LWIP_TCP_SACK_OUT || defined __DOXYGEN__
+    #define LWIP_TCP_SACK_OUT               1 // <== here
+    #endif
+    ```
+
 
 #### Bidirectional bandwidth/performance test with flood ping
 * Run `ping RP2040_IP -f -s 1460` from linux server
