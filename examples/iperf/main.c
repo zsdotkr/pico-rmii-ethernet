@@ -35,6 +35,9 @@ void netif_status_callback(struct netif *netif)
 {	printf("netif status changed %s\n", ip4addr_ntoa(netif_ip4_addr(netif)));
 }
 
+extern void cli_init(void);
+extern void cli_run(void);
+
 int main()
 {
 	// LWIP network interface
@@ -100,8 +103,10 @@ int main()
 	lwiperf_start_tcp_server_default(report, NULL);
 	printf("iperf TCP server launched\n");
 
+	cli_init();
 	while (1)
 	{	tight_loop_contents();
+		cli_run();
 	}
 
 	return 0;

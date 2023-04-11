@@ -28,6 +28,9 @@ void netif_status_callback(struct netif *netif) {
   printf("netif status changed %s\n", ip4addr_ntoa(netif_ip4_addr(netif)));
 }
 
+extern void cli_init(void);
+extern void cli_run(void);
+
 int main() {
   // LWIP network interface
   struct netif netif;
@@ -90,8 +93,10 @@ int main() {
   // This let's core 0 do other things :)
   multicore_launch_core1(netif_rmii_ethernet_loop);
 
+  cli_init();
   while (1) {
     tight_loop_contents();
+    cli_run();
   }
 
   return 0;
