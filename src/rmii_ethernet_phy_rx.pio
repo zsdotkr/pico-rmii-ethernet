@@ -7,32 +7,32 @@
 .program rmii_ethernet_phy_rx_data	; Must be run at 100MHz
 
 .wrap_target
-	; ----- [STEP_A] check IDLE with CRS/DV
+	; ----- [STEP_A] check IDLE
+	wait 1 gpio 23 [1]	; wait until CLK=H
+idle:
 	wait 0 pin 2 [1]
-	wait 0 pin 2 [1] 	; two consecutive "CRS/DV=Low" means RX is idle
-	wait 0 pin 0 [1]	; check RXD[1:0] are also idle
-	wait 0 pin 1 [1]	; check RXD[1:0] are also idle
+	jmp pin idle [1]	; wait two 'consecutive' "CRS/DV=Low"
 
-	; ----- [STEP_B] check preamble
-	wait 1 pin 2 [2]
-	wait 1 pin 0 [1]
+	wait 0 pin 0 [1]	; check RXD[0]=L
+	wait 0 pin 1 [1]	; check RXD[1]=L
+
+	; ----- [STEP_B] check start of preamble
+	wait 1 pin 2 [2]	; check CRS/DV=H
+	wait 1 pin 0 [1]	; check RXD[0]=H
 
 	; ----- [STEP_C] check last bit of SFD (RXD[1:0] = 11b)
-	wait 1 pin 1 [1]
+	wait 1 pin 1 [1]	; check RXD[1]=H
 
 	; ----- [STEP_D] receiving data, CRSDV=H
 crsdv_h:
 	in pins, 2 			; push RX[1:0] to ISR
-	jmp pin crsdv_h		; JUMP_PIN = CRSDV, see rmii_ethernet_phy_rx_init()
+	jmp pin crsdv_h		; loop until CRS/DV=H
 
-	; ----- [STEP_E] push 2 bits, CRSDV=L (assume CRSDV will be re-triggering at next cycle, RMII v1.2)
-	in pins, 2 [1] 		; push RX[1:0] to ISR
+	; ----- [STEP_E] for RMII v1.2
+	in pins, 2  		; push RX[1:0] to ISR evne if CRS/DV=L
+	jmp pin crsdv_h		; CRS/DV is retriggered, jump to receving routine
 
-	; ----- [STEP-F] loop if CRSDV is retriggered (RMII v1.2)
-	in pins, 2
-	jmp pin crsdv_h
-
-	; ----- [STEP-G] clearing ISR (4 bits will remain in ISR if CRSDV is not re-triggered)
+	; ----- [STEP-G] clearing ISR
 	mov isr, y			; move data to isr make isr to reset its shift-counter
 
 	; ----- [STEP-H] raise ISR #3 to inform end-of-frame and wait for ISR to clear

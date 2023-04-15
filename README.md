@@ -6,7 +6,7 @@
 
 * ***iperf/TCP performance : 21.7Mbps Rx (RP2040 = iperf TCP server, unidirectional traffic)***
 * ***ICMP performance : 11Mbps Rx + 11Mbps Tx (RP2040 = ICMP echo server, bidirectional traffic)***
-* Complement RX pio SM to meet the RMII v1.2 CRS/DV characteristics
+* Complement RX pio SM to meet the RMII v1.2 CRS/DV characteristics (tested with KSZ8081)
 * Redesign the receive-side code for performance
 * Implement hardware CRC engine called sniffer engine on RP2040
 * Tested in sdk v1.5 & v1.4
@@ -14,16 +14,17 @@
 
 ## <U>Issues in original repository</U>
 #### RMII RX side SM implementation in original repo is incomplete to meet CRS/DV pattern of RMII V1.2
-* Most Ethernet PHY adopt RMII V1.2
+* Many Ethernet transceiver adopt RMII V1.2
     * CRS/DV output can be toggled at end of frame if RMII v1.2 is adopted (red circle at image)
     * CRS/DV toggling occur more frequently with larger frames or higher frame rates.
     * Refer [AN-1405 from TI] for more technical details
         ![image](doc/crsdv.jpg)
 
-* LAN8720 also seems to adopt RMII v1.2 even though it does not mention it in their document
+* LAN8720 seems to use RMII v1.2 even though they does not mention it in their document
     * Packets are lost frequently when running `ping RP2040_IP -s 1450 -i 0.1`
     * Packets are not lost when running `ping RP2040_IP -s 1000 -i 0.1`
-    * I can also see TCP retransmissions happening in the original http server example as well
+
+* But transceiver such as KSZ8081 mentions they are using RMII v1.2 in their document clearly.
 
 * So ***Using CRS/DV as an interrupt source to determine the end-of-frame*** in the original repo is inadequate, even though the original version gives us inspiration for how to use RMII at RP2040
 
@@ -175,6 +176,7 @@ See [iperf](examples/iperf) folder using default iperf TCP server code of LwIP f
 # Release history
 * After v0.1
     * Fix MDIO bug doing bit-bang
+    * Fix bug in pio rx sm while testing RMII 1.2 with KSZ8081
     * Change FCS from software to hardware (calculation time: 230us -> 20us when `ping -s 1460`)
 
 # Current Limitations
