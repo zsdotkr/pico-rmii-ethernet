@@ -4,6 +4,7 @@
 
 #include "pico/stdlib.h"
 
+# if 0 // software FCS (CRC32)
 const uint32_t crc32_tab[] = {
 	0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f,
 	0xe963a535, 0x9e6495a3,	0x0edb8832, 0x79dcb8a4, 0xe0d5e91e, 0x97d2d988,
@@ -65,3 +66,46 @@ uint32_t fcs_crc32(const uint8_t *buf, int size)
         crc = crc32_tab[(crc ^ *p++) & 0xFF] ^ (crc >> 8);
     return crc ^ ~0U;
 }
+#else // use DMA based hardware CRC engine called sniffer in pico
+#include "pico/mutex.h"
+#include "hardware/dma.h"
+
+uint32_t fcs_crc32(const uint8_t *buf, int size)
+{	// calculate FCS using RP2040 sniffer engine, refer from pico-examples/dma/sniff_crc in sdk v.15
+	static int 					crc_dma = -1;
+	static dma_channel_config 	cfg;
+	static mutex_t 				mtx;
+	uint8_t				dummy_dest;
+	uint32_t			crc;
+
+	if (crc_dma < 0)
+	{	crc_dma = dma_claim_unused_channel(true);
+
+		mutex_init(&mtx);
+
+		cfg = dma_channel_get_default_config(crc_dma);
+
+		channel_config_set_transfer_data_size(&cfg, DMA_SIZE_8);
+		channel_config_set_read_increment(&cfg, true);
+		channel_config_set_write_increment(&cfg, false);
+		channel_config_set_sniff_enable(&cfg, true);
+
+		dma_sniffer_enable(crc_dma, DMA_SNIFF_CTRL_CALC_VALUE_CRC32R, true);
+		dma_sniffer_set_output_reverse_enabled(true);
+		dma_sniffer_set_output_invert_enabled(true);
+	}
+
+	mutex_enter_blocking(&mtx);
+
+	dma_sniffer_set_data_accumulator(0xffffffff); // use 'dma_hw->sniff_data = 0xffffffff;' for sdk1.4
+	dma_channel_configure(crc_dma, &cfg, &dummy_dest, buf, size, true);
+	dma_channel_wait_for_finish_blocking(crc_dma);
+
+	crc = dma_sniffer_get_data_accumulator();
+
+	mutex_exit(&mtx);
+
+	return crc;
+}
+
+#endif

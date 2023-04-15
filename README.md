@@ -1,6 +1,6 @@
-# pico-rmii-ethernet (for production level)
+# pico-rmii-ethernet
 
-***Enable 100Mbit/s Ethernet connectivity for production level*** on your [Raspberry Pi Pico] using DMA and PIO capability of RP2040 with an RMII-based Ethernet PHY module
+***Enable 100Mbit/s Ethernet connectivity for real environment*** on your [Raspberry Pi Pico] using DMA and PIO capability of RP2040 with an RMII-based Ethernet PHY module.
 
 [Raspberry Pi Pico]: (https://www.raspberrypi.org/products/raspberry-pi-pico/)
 
@@ -8,7 +8,9 @@
 * ***ICMP performance : 11Mbps Rx + 11Mbps Tx (RP2040 = ICMP echo server, bidirectional traffic)***
 * Complement RX pio SM to meet the RMII v1.2 CRS/DV characteristics
 * Redesign the receive-side code for performance
-* Test survivability in stress conditions
+* Implement hardware CRC engine called sniffer engine on RP2040
+* Tested in sdk v1.5 & v1.4
+
 
 ## <U>Issues in original repository</U>
 #### RMII RX side SM implementation in original repo is incomplete to meet CRS/DV pattern of RMII V1.2
@@ -170,27 +172,18 @@ We're generating the 50MHz RMII clock on the RP2040 instead of getting it from t
 See [examples](examples/httpd) folder for simple http server
 See [iperf](examples/iperf) folder using default iperf TCP server code of LwIP for performance test
 
+# Release history
+* After v0.1
+    * Fix MDIO bug doing bit-bang
+    * Change FCS from software to hardware (calculation time: 230us -> 20us when `ping -s 1460`)
+
 # Current Limitations
 
+* `Framented packets` or `short interval packes` are not be handled properly.
+    * because of performance limitation of `single SM + interrupt driven DMA control`
+    * in the case of TCP, this does not cause a problem (see `test result`for how-to-do)
+    * but this cause problem if you need to use DTLS having many certificates.
+
+* 10BASE-T is not implemented yet.
 * Built-in LWIP stack is compiled with `NO_SYS` so LWIP Netcon and Socket API's are not enabled
-* Auto-negotiation to 10BASE-T is not supported
-* MDIO is bit-banged
-
-# For further development
-#### Ring style DMA (chain_to RX-DATA-DMA & RX-CONTROL-DMA)
-* Maybe required to overcome Rx limitation caused by "single DMA buffer in RX SM".
-* but... The processing time to separate packets is not negligible (need about 2/3 of CRC32 calculation load in my test)
-* Eventually, CRC and segmentation overhead take more load. Is it reasonable?
-
-#### Offload CRC32 calculation load with Hardware CRC32 engine
-* RP2040 has a hardware CRC calculation engine for DMA named 'sniff'
-* CRC calculation load will be lowered if it is implementable
-* But... I don't know detail of 'sniff' yet..   ;)
-
-#### Overclocking to 200MHz
-* Some developers are posting how to overclock the RP2040
-* Overclock to 200MHz may double the overall throughput enhancement with minimal changes
-* but.. ensuring overclocked hardware is a problem
-
-
 
