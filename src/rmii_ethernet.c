@@ -96,18 +96,18 @@ timelapse_declare(tl_net, "NET");
 // ------------------------------------------------------------------
 
 static void netif_rmii_ethernet_mdio_clock_out(int bit)
-{	gpio_put(PICO_RMII_MDC_PIN, 0);			sleep_us(1);
+{	gpio_put(PICO_RMII_MDC_PIN, 0);			busy_wait_us(2);
 	gpio_put(PICO_RMII_MDIO_PIN, bit);
-	gpio_put(PICO_RMII_MDC_PIN, 1);			sleep_us(1);
+	gpio_put(PICO_RMII_MDC_PIN, 1);			busy_wait_us(2);
 }
 
 static uint netif_rmii_ethernet_mdio_clock_in()
-{	gpio_put(PICO_RMII_MDC_PIN, 0);			sleep_us(1);
-
-	gpio_put(PICO_RMII_MDC_PIN, 1);
+{	gpio_put(PICO_RMII_MDC_PIN, 0);			busy_wait_us(2);
 
 	int bit = gpio_get(PICO_RMII_MDIO_PIN);
-	sleep_us(1);
+
+	gpio_put(PICO_RMII_MDC_PIN, 1);
+	busy_wait_us(2);
 
 	return bit;
 }
