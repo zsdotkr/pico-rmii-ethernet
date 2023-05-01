@@ -97,13 +97,14 @@ At first, started to test the throughput lightly, was disappointed with the resu
 
 | Case                          | Throughput | Note                          |
 | ------------------------------|------------|-------------------------------|
-| A. Sniffer FCS + double SM    | 50Mbps     | TCP_WND = 4 (default of LWIP) |
-| B. Sniffer FCS + single SM    | 17.8Mbps   | TCP_WND = 4 (default of LWIP) |
-| C. Byte-based FCS + single SM | 2.23Mbps   | TCP_WND = 4 (default of LWIP) |
-| D. Byte-based FCS + single SM | 21.7Mbps   | TCP_WND = 2                   |
+| A. Sniffer FCS + double SM    | 50Mbps     | TCP_WND = 4, TCP_SACK=1       |
+| B. Sniffer FCS + double SM    | 35Mbps     | TCP_WND = 4, TCP_SACK=0       |
+| C. Sniffer FCS + single SM    | 17.8Mbps   | TCP_WND = 4, TCP_SACK=1       |
+| D. Byte-based FCS + single SM | 2.23Mbps   | TCP_WND = 4, TCP_SACK=1       |
+| E. Byte-based FCS + single SM | 21.7Mbps   | TCP_WND = 2, TCP_SACK=1       |
 
-* Fragmented frames can not be handled in case B/C/D.
-* Poor performance of case C
+* Fragmented frames can not be handled in case C/D/E.
+* Poor performance of case D
     * iperf/TCP sends packets at very short intervals until TCP_WND is full
     * More than half of the frames are discarded silently at the receiver side SM without notice in `TCP_WND=4` condition when I checked with wireshark after turn on TCP_SACK option in LwIP TCP stack
 
