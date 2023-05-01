@@ -1,110 +1,123 @@
-# pico-rmii-ethernet
+# pico-rmii-ethernet (for real usage)
 
-***Enable 100Mbit/s Ethernet connectivity for real environment*** on your [Raspberry Pi Pico] using DMA and PIO capability of RP2040 with an RMII-based Ethernet PHY module.
+***Enable 100Mbit/s Ethernet connectivity for real environment with your [Raspberry Pi Pico]*** using DMA and PIO capability of RP2040 with an external RMII-based Ethernet PHY module.
 
 [Raspberry Pi Pico]: (https://www.raspberrypi.org/products/raspberry-pi-pico/)
 
-* ***iperf/TCP performance : 21.7Mbps Rx (RP2040 = iperf TCP server, unidirectional traffic)***
-* ***ICMP performance : 11Mbps Rx + 11Mbps Tx (RP2040 = ICMP echo server, bidirectional traffic)***
-* Complement RX pio SM to meet the RMII v1.2 CRS/DV characteristics (tested with KSZ8081)
-* Redesign the receive-side code for performance
-* Implement hardware CRC engine called sniffer engine on RP2040
+* iperf/TCP performance : ***50Mbps*** Rx (~ 4500 packets/sec, RP2040 = iperf TCP server)
+    * Redesign the receiver side PIO-SM to handle fragmented frame / maximize performance
+    * Implement hardware CRC engine (sniffer engine on RP2040)
+* RMII v1.0 and ***v1.2 compatible***
+    * Complement RX side SM to meet the RMII v1.2 CRS/DV characteristics
+    * Tested with LAN8720 and KSZ8081 transceiver
 * Tested in sdk v1.5 & v1.4
 
 
+At first, started to test the throughput lightly, was disappointed with the result, found some issues with the original code, tried to improve, and finally share my code.
+
+---
 ## <U>Issues in original repository</U>
-#### RMII RX side SM implementation in original repo is incomplete to meet CRS/DV pattern of RMII V1.2
+
+### RMII receiver side SM code does not meet CRS/DV pattern of RMII v1.2
 * Many Ethernet transceiver adopt RMII V1.2
-    * CRS/DV output can be toggled at end of frame if RMII v1.2 is adopted (red circle at image)
-    * CRS/DV toggling occur more frequently with larger frames or higher frame rates.
+    * CRS/DV output will  be toggled at end of frame if RMII v1.2 is adopted (red circle at image)
     * Refer [AN-1405 from TI] for more technical details
         ![image](doc/crsdv.jpg)
 
-* LAN8720 seems to use RMII v1.2 even though they does not mention it in their document
+* It's not clear whether LAN8720 use RMII v1.2 or not
     * Packets are lost frequently when running `ping RP2040_IP -s 1450 -i 0.1`
     * Packets are not lost when running `ping RP2040_IP -s 1000 -i 0.1`
 
-* But transceiver such as KSZ8081 mentions they are using RMII v1.2 in their document clearly.
+* And original code does not operates with KSZ8081 (clearly mentions RMII v1.2)
 
-* So ***Using CRS/DV as an interrupt source to determine the end-of-frame*** in the original repo is inadequate, even though the original version gives us inspiration for how to use RMII at RP2040
+* So ***Using CRS/DV as an interrupt source to determine the end-of-frame*** in the original repo is inadequate.
 
 [AN-1405 from TI]: https://www.ti.com/lit/an/snla076a/snla076a.pdf?ts=1672269799540&ref_url=https%253A%252F%252Fwww.google.com%252F
 
+### Need optimization calculating ethernet frame FCS
+* The original repo implements ***bit-based CRC32 calculation*** for FCS.
+* Byte-based or using a sniffer engine in RP2040 should be considered to enhance performance.
+
+### Handling fragmented packet
+* I checked that the second frame is discarded when a packet is fragmented with two frames (tested with `ping RP2040_IP -s 2000`).
+
+* This may cause a problem if you are planning to use CoAP or other DTLS-based secure transport.
+    * DTLS hello packet carrying 2~3 certificates will be fragmented with two seperate frames.
+* And it also affects TCP performance because TCP sends multiple packets with very short intervals while window control.
+
+* I tried several code optimization but has failed. Because...
+    * IPG (Inter Packet Gap) for 100Mbps = 960 nano-second.
+    * 960nsec is too short to overcome with a single SM/DMA combination running at RP2040/100MHz
+
+---
+
+## <U>Implementation</U>
+
+### Use Sniffer engine for FCS calculation
+* With thanks to an example in SDK v1.5
+
+### Redesign RMII receiver side code
+* Use `irq` PIO assembly as notification for end-of-frame instead of CRS/DV signal.
+* Use one more SM/DMA at the receiver side to receive the second frame while processing the first at ISR routine.
+### Overall diagram implemented for RMII at RP2040
+
+![image](doc/sm-diagram.jpg)
+
+---
+
+## <U>Throughput test result</U>
+### Environment
+* Test server : Ubuntu 22.0.4 LTS / VirtualBox
+* Server side ethernet : ASIX AX88179 10/100Mbps USB/Ethenet dongle + USB 2.0 Hub + USB 3.0 Port (Windows PC)
+* USB Controller setting at Virtualbox : USB 3.0
+    * Speed of USB : 10Mbps (USB 1.0), 480Mbps (USB 2.0), 4.8Gbps (USB 3.0)
+
+-------------------------------------------------------
+
+
+
 ## <U>Test result after implementation</U>
-#### Test environment
+### Environment
 * Test server : Ubuntu 22.0.4 LTS / VirtualBox
 * Server side ethernet : ASIX AX88179 10/100Mbps USB/Ethenet dongle + USB 2.0 Hub + USB 3.0 Port (Windows PC)
 * USB Controller setting at Virtualbox : USB 3.0
     * Speed per USB version : 10Mbps (USB 1.0), 480Mbps (USB 2.0), 4.8Gbps (USB 3.0)
+* Run `iperf -c RP2040_IP` from linux server
+    * LWIP : enable TCP_SACK
+    * To enable TCP_SACK : Change below `#define` in `lib/lwip/src/include/lwip/opt.h`
+        ```c
+        /**
+         * LWIP_TCP_SACK_OUT==1: TCP will support sending selective acknowledgements (SACKs).
+        */
+        #if !defined LWIP_TCP_SACK_OUT || defined __DOXYGEN__
+        #define LWIP_TCP_SACK_OUT               1 // <== here
+        #endif
+        ```
+### Result
 
-#### Unidirectional bandwidth/performance test with iperf/TCP
-* Run `iperf -c RP2040_IP` from linux server (test duration : 10sec)
-* Test Condition : enable TCP_SACK, adjust TCP_WND (see below)
-* Test result are as follows:
+| Case                          | Throughput | Note                          |
+| ------------------------------|------------|-------------------------------|
+| A. Sniffer FCS + double SM    | 50Mbps     | TCP_WND = 4 (default of LWIP) |
+| B. Sniffer FCS + single SM    | 17.8Mbps   | TCP_WND = 4 (default of LWIP) |
+| C. Byte-based FCS + single SM | 2.23Mbps   | TCP_WND = 4 (default of LWIP) |
+| D. Byte-based FCS + single SM | 21.7Mbps   | TCP_WND = 2                   |
 
-    | TCP_WND | Transfer (MBytes) | Bandiwdth (Mbps) | Comment |
-    | ------- | -------- | --------- | ------- |
-    | (4 * TCP_MSS) | 3.00  | 2.23 | Default setting of LwIP |
-    | (3 * TCP_MSS) | 24.8  | 20.3 |  |
-    | (2 * TCP_MSS) | 26.0  | 21.7 | Minimum value for TCP |
+* Fragmented frames can not be handled in case B/C/D.
+* Poor performance of case C
+    * iperf/TCP sends packets at very short intervals until TCP_WND is full
+    * More than half of the frames are discarded silently at the receiver side SM without notice in `TCP_WND=4` condition when I checked with wireshark after turn on TCP_SACK option in LwIP TCP stack
 
-* performance degradation in higher TCP_WND
-    * iperf/TCP sends packets at very short intervals until TCP_WND is full (at least in upper test cases)
-    * And, Minimum IPG (Inter-Packet-Gap) for 100Mbps is 960nsec
-    * And, there is no way to control DMA directly at pio SM
-    * ***"960nsec or packet interval at TCP/kernel" is too short*** to cover with single DMA buffer in ISR callback running at RP2040/100MHz
-
-    * Therefore, more than half of the frames are discarded silently at the receiver side SM without notice in `(4 * TCP_MSS)` condition (You can see what happens with wireshark after turn on TCP_SACK option in LwIP TCP stack)
-
-* TCP_WND modification : Change below `#define` in `lib/lwip/src/include/lwip/opt.h`
-    ```c
-    /**
-     * TCP_WND: The size of a TCP window.  This must be at least
-     * (2 * TCP_MSS) for things to work well.
-     ...
-    */
-    #if !defined TCP_WND || defined __DOXYGEN__
-    #define TCP_WND                         (2 * TCP_MSS) // <== here
-    #endif
-    ```
-
-* enable TCP_SACK : Change below `#define` in `lib/lwip/src/include/lwip/opt.h`
-    ```c
-    /**
-     * LWIP_TCP_SACK_OUT==1: TCP will support sending selective acknowledgements (SACKs).
-    */
-    #if !defined LWIP_TCP_SACK_OUT || defined __DOXYGEN__
-    #define LWIP_TCP_SACK_OUT               1 // <== here
-    #endif
-    ```
-
-
-#### Bidirectional bandwidth/performance test with flood ping
-* Run `ping RP2040_IP -f -s 1460` from linux server
-* Test result are as follows:
-    ```
-    --- RP2040_IP ping statistics ---
-    100000 packets transmitted, 100000 received, 0% packet loss, time 132205ms
-    rtt min/avg/max/mdev = 1.109/1.239/18.602/0.265 ms, pipe 2, ipg/ewma 1.322/1.256 ms
-    ```
-* Simple profiling of rmii_ethernet.c (turn on USE_TIMELAPSE, turn-off USE_RMII_SM_STAT)
-
-    | Type                         | Total | CRC calculation | LwIP | other code |
-    | ---------------------------- | ----- | --------------- | ---- | ---------- |
-    | netif_rmii_ethernet_output   | 312us | 283us, 91% | can't measure | 29us, 9% |
-    | netif_rmii_ethernet_poll     | 736us | 283us, 38% | 469us, 64% | -16us, 0% |
-    | Total (TX + RX)              | 1048us | 566us, 54% | 469us, 45% | 13us, 1% |
-
-
-#### Stress test with flood ping with preload option
-* Run `ping RP2040_IP -f -l 5 -s 1480` from linux server
-* Test result are as follows:
-    * While packets are injected, `s_sm_stat.rx_full` is incremented, but no other errors.
-    ```
-    --- RP2040_IP ping statistics ---
-    14620 packets transmitted, 13599 received, 6.98358% packet loss, time 8972ms
-    rtt min/avg/max/mdev = 1.146/2.988/8.355/0.653 ms, pipe 5, ipg/ewma 0.613/3.192 ms
-    ```
+    * To modify TCP_WND : Change below `#define` in `lib/lwip/src/include/lwip/opt.h`
+        ```c
+        /**
+         * TCP_WND: The size of a TCP window.  This must be at least
+        * (2 * TCP_MSS) for things to work well.
+        ...
+        */
+        #if !defined TCP_WND || defined __DOXYGEN__
+        #define TCP_WND                         (4 * TCP_MSS) // <== here
+        #endif
+        ```
 
 ## <U>Compile</U>
 1. Move to top directory after fork or clone this repository
@@ -173,19 +186,6 @@ We're generating the 50MHz RMII clock on the RP2040 instead of getting it from t
 See [examples](examples/httpd) folder for simple http server
 See [iperf](examples/iperf) folder using default iperf TCP server code of LwIP for performance test
 
-# Release history
-* After v0.1
-    * Fix MDIO bug doing bit-bang
-    * Fix bug in pio rx sm while testing RMII 1.2 with KSZ8081
-    * Change FCS from software to hardware (calculation time: 230us -> 20us when `ping -s 1460`)
-
 # Current Limitations
-
-* `Framented packets` or `short interval packes` are not be handled properly.
-    * because of performance limitation of `single SM + interrupt driven DMA control`
-    * in the case of TCP, this does not cause a problem (see `test result`for how-to-do)
-    * but this cause problem if you need to use DTLS having many certificates.
-
 * 10BASE-T is not implemented yet.
 * Built-in LWIP stack is compiled with `NO_SYS` so LWIP Netcon and Socket API's are not enabled
-

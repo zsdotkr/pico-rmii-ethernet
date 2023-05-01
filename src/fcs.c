@@ -4,7 +4,7 @@
 
 #include "pico/stdlib.h"
 
-# if 0 // software FCS (CRC32)
+#if 0 // software FCS (CRC32)
 const uint32_t crc32_tab[] = {
 	0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f,
 	0xe963a535, 0x9e6495a3,	0x0edb8832, 0x79dcb8a4, 0xe0d5e91e, 0x97d2d988,
@@ -70,7 +70,7 @@ uint32_t fcs_crc32(const uint8_t *buf, int size)
 #include "pico/mutex.h"
 #include "hardware/dma.h"
 
-uint32_t fcs_crc32(const uint8_t *buf, int size)
+uint32_t __time_critical_func(fcs_crc32)(const uint8_t *buf, int size)
 {	// calculate FCS using RP2040 sniffer engine, refer from pico-examples/dma/sniff_crc in sdk v.15
 	static int 					crc_dma = -1;
 	static dma_channel_config 	cfg;

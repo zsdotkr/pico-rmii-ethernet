@@ -24,7 +24,8 @@
 	} rmii_sm_stat_t;
 	#define rmii_sm_stat_declare(name)			rmii_sm_stat_t name = {0};
 	#define rmii_sm_stat_add(name_field, val)	name_field += (val);
-	#define rmii_sm_stat_clr(name)				{	memset(&(name), 0, sizeof(rmii_sm_stat_t));	}
+	#define rmii_sm_stat_clr(name)				{	name.rx_ok = name.tx_ok = 0; 	}
+
 	void rmii_sm_stat_prt(rmii_sm_stat_t* name)
 	{	int x = name->tx_ok + name->rx_ok + name->rx_full+ name->bad_crc+ name->pbuf_empty+ name->pbuf_err;
 		if (x)

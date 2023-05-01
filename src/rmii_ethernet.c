@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#define USE_TWO_RX_SM
+
 #include <string.h>
 
 #include "lan8720a.h"
@@ -19,7 +21,11 @@
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
 
-#include "rmii_ethernet_phy_rx.pio.h"
+#ifdef USE_TWO_RX_SM
+	#include "rmii_ethernet_phy_rx_2.pio.h"
+#else
+	#include "rmii_ethernet_phy_rx.pio.h"
+#endif
 #include "rmii_ethernet_phy_tx.pio.h"
 
 #include "rmii_ethernet/netif.h"
@@ -49,6 +55,7 @@ static struct netif_rmii_ethernet_config s_rmii_if_cfg = NETIF_RMII_ETHERNET_DEF
 #define PICO_RMII_PIO 		(s_rmii_if_cfg.pio)
 #define PICO_RMII_SM_RX 	(s_rmii_if_cfg.pio_sm_start)
 #define PICO_RMII_SM_TX 	(s_rmii_if_cfg.pio_sm_start + 1)
+#define PICO_RMII_SM_RX_2 	(s_rmii_if_cfg.pio_sm_start + 2)
 #define PICO_RMII_RX_PIN 	(s_rmii_if_cfg.rx_pin_start)
 #define PICO_RMII_TX_PIN 	(s_rmii_if_cfg.tx_pin_start)
 #define PICO_RMII_MDIO_PIN 	(s_rmii_if_cfg.mdio_pin_start)
@@ -65,16 +72,23 @@ static int 					s_tx_dma_chn;		// DMA channel number for TX SM
 static dma_channel_config 	s_rx_dma_chn_cfg;	// DMA channel configuration for RX SM
 static dma_channel_config 	s_tx_dma_chn_cfg;	// DMA channel configuration for TX SM
 
+#ifdef USE_TWO_RX_SM
+static int 					s_rx_dma_chn_2;		// DMA channel number for second RX SM
+static dma_channel_config 	s_rx_dma_chn_cfg_2;	// DMA channel configuration for RX SM
+#endif
+
 // ----- buffer for RMII RX
 #define ETH_FRAME_LEN		(1514+4+6)			// 1514(MAC ~ payload) + 4(FCS) + 6(reserved for data boundary guard or VLAN??)
 #define MAX_RX_FRAME		4					// 4 frame needs for iperf/TCP test (21Mbps), adjust as your application needs
-static int 					s_rx_frame_head;	// updated in ISR code
-static int 					s_rx_frame_rear;	// updated in netif_rmii_ethernet_poll()
+static volatile int			s_rx_frame_head;	// updated in ISR code
+static volatile int			s_rx_frame_rear;	// updated in netif_rmii_ethernet_poll()
 typedef struct
 {	int						len;				// length of data
 	uint8_t 				data[ETH_FRAME_LEN];
 } rx_frame_t;
 static rx_frame_t			s_rx_frame[MAX_RX_FRAME];	// buffer between RX-SM ~ DMA
+static uint8_t				s_rx_frame_dummy[2];		// dummy memory for DMA when s_rx_frame == full
+static int 					s_rx_frame_idx[2];
 
 static semaphore_t			s_rx_frame_sem;		// to trigger packet receiving event from ISR code to netif_rmii_ethernet_poll()
 
@@ -283,44 +297,85 @@ static err_t netif_rmii_ethernet_output(struct netif *netif, struct pbuf *p)
 // ------------------------------------------------------------------
 // - Ethernet Rx
 // ------------------------------------------------------------------
+void __time_critical_func(rx_sm_isr_run)(int sm_no)
+{	int sm_idx, frame_idx, dma_no;
 
-void __time_critical_func(rx_sm_isr_handler) (void)
-{	// MUST declare '__time_critical_func' (to to locate code in RAM, performance severely degraded if not)
+#ifdef USE_TWO_RX_SM
+	if (sm_no == PICO_RMII_SM_RX)
+	{	dma_no = s_rx_dma_chn;		sm_idx = 0; 	frame_idx = s_rx_frame_idx[0]; 		}
+	else
+	{	dma_no = s_rx_dma_chn_2;	sm_idx = 1; 	frame_idx = s_rx_frame_idx[1]; 		}
+#else
+	dma_no = s_rx_dma_chn;		sm_idx = 0; 	frame_idx = s_rx_frame_idx[0];
+#endif
+	int	is_real_rx = dma_hw->ch[dma_no].ctrl_trig & DMA_CH0_CTRL_TRIG_INCR_WRITE_BITS;
 
-	// order DMA abort (upper side of dma_channel_abort()), MUST be called to change buffer address of DMA
-	dma_hw->abort = 1u << s_rx_dma_chn;
+	// 1. abort DMA
+	dma_channel_abort(dma_no);
 
-	uint32_t	offset = dma_channel_hw_addr(s_rx_dma_chn)->write_addr;
-	int 		next = (s_rx_frame_head != (MAX_RX_FRAME-1)) ? s_rx_frame_head + 1 : 0;
+	// 2. calculate length
+	if (is_real_rx)
+	{	uint32_t	offset = dma_channel_hw_addr(dma_no)->write_addr;
+		uint32_t 	start = (uint32_t)s_rx_frame[frame_idx].data;
 
-	// run some codes while DMA abort completed (need several clocks)
-	if (next == s_rx_frame_rear) // rx buffer full
-	{	next = s_rx_frame_head;
+		s_rx_frame[frame_idx].len = offset - start;
+	}
+
+	// 3. prepare DMA
+	int			rear = s_rx_frame_rear;
+	int 		next = (s_rx_frame_head != (MAX_RX_FRAME -1)) ? s_rx_frame_head + 1 : 0;
+
+	int			is_full;
+	int 		sem_permit = sem_available(&s_rx_frame_sem);
+
+	if 	(is_real_rx)
+	{	if (sem_permit <= (MAX_RX_FRAME-3))	{	is_full = 0;	}
+		else								{	is_full = 1;	}
+	}
+	else
+	{	if (sem_permit <= (MAX_RX_FRAME-2))	{	is_full = 0;	}
+		else								{	is_full = 1;	}
+	}
+
+	if (unlikely(is_full))
+	{	dma_hw->ch[dma_no].ctrl_trig &= ~DMA_CH0_CTRL_TRIG_INCR_WRITE_BITS;
+		dma_channel_set_write_addr(dma_no, &s_rx_frame_dummy[sm_idx], false);
 		rmii_sm_stat_add(s_sm_stat.rx_full, 1);
 	}
-
-	// check abort completion (lower side of dma_channel_abort())
-	while (dma_hw->ch[s_rx_dma_chn].ctrl_trig & DMA_CH0_CTRL_TRIG_BUSY_BITS)
-	{	tight_loop_contents();	}
-
-	// clear irq #3 to inform rx-sm to wrap around (and wait preamble)
-	pio0->irq |= (0x01 << 3);
-
-	// prepare DMA
-	dma_channel_set_write_addr(s_rx_dma_chn, s_rx_frame[next].data, false);
-	dma_channel_set_trans_count(s_rx_dma_chn, sizeof(s_rx_frame[0].data), true);
-
-	if (next != s_rx_frame_head)
-	{	uint32_t start = (uint32_t)s_rx_frame[s_rx_frame_head].data;
-		s_rx_frame[s_rx_frame_head].len = offset - start;
-
+	else
+	{	dma_hw->ch[dma_no].ctrl_trig |= DMA_CH0_CTRL_TRIG_INCR_WRITE_BITS;
+		dma_channel_set_write_addr(dma_no, s_rx_frame[next].data, false);
 		s_rx_frame_head = next;
-
-		sem_release(&s_rx_frame_sem);
+		s_rx_frame_idx[sm_idx] = next;
 
 		rmii_sm_stat_add(s_sm_stat.rx_ok, 1);
-		// DBG("ISR H/R %d %d", s_rx_frame_head, s_rx_frame_rear);
 	}
+	dma_channel_set_trans_count(dma_no, sizeof(s_rx_frame[0].data), true);
+
+	// 4. resume SM
+	PICO_RMII_PIO->irq |= (0x01 << sm_no);
+
+	if (is_real_rx)	{	sem_release(&s_rx_frame_sem);	}
+}
+
+void __time_critical_func(rx_sm_isr_handler) (void) // to locate code in RAM
+{	int		sm_no, next;
+
+#ifndef USE_TWO_RX_SM
+	sm_no = PICO_RMII_SM_RX;
+#else
+	if (PICO_RMII_PIO->irq & (1<<PICO_RMII_SM_RX))			{	sm_no = PICO_RMII_SM_RX;	next = PICO_RMII_SM_RX_2; 	}
+	else if (PICO_RMII_PIO->irq & (1<<PICO_RMII_SM_RX_2))	{	sm_no = PICO_RMII_SM_RX_2;	next = PICO_RMII_SM_RX; 	}
+	else
+	{	// FIXME can happen??
+		return;
+	}
+#endif
+
+	rx_sm_isr_run(sm_no);
+#ifdef USE_TWO_RX_SM
+	if (PICO_RMII_PIO->irq & (1<<next))	{	rx_sm_isr_run(next);}
+#endif
 }
 
 void netif_rmii_ethernet_poll()
@@ -345,6 +400,15 @@ void netif_rmii_ethernet_poll()
 		}
 	}
 
+	// check & clear deadlock between two RX SM forcefully
+#ifdef USE_TWO_RX_SM
+	{	uint32_t irq_mask = (1<<(4+PICO_RMII_SM_RX)) | (1<<(4+PICO_RMII_SM_RX_2));
+		if ((PICO_RMII_PIO->irq & irq_mask) == irq_mask)
+		{	pio_interrupt_clear(PICO_RMII_PIO, 4 + PICO_RMII_SM_RX);
+			DBG("RX SM Deadlock cleared");
+		}
+	}
+#endif
 	if (sem_acquire_timeout_ms(&s_rx_frame_sem, 100) == true)
 	{	timelapse_start(tl_rx);
 
@@ -431,15 +495,27 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif)
 	// Init s_rx_frame & semaphore
 	s_rx_frame_head = s_rx_frame_rear = 0;
 	for (int i = 0; i < MAX_RX_FRAME; i++)	{	s_rx_frame[i].len = 0;	}
-	sem_init(&s_rx_frame_sem, 0, MAX_RX_FRAME * 2);
+	sem_init(&s_rx_frame_sem, 0, MAX_RX_FRAME);
 
 	// Init the RMII PIO programs
+#ifdef USE_TWO_RX_SM
+	s_rx_sm_off = pio_add_program(PICO_RMII_PIO, &rmii_ethernet_phy_rx_2_data_program);
+#else
 	s_rx_sm_off = pio_add_program(PICO_RMII_PIO, &rmii_ethernet_phy_rx_data_program);
+#endif
 	s_tx_sm_off = pio_add_program(PICO_RMII_PIO, &rmii_ethernet_phy_tx_data_program);
 
 	// Configure the DMA channels
 	s_rx_dma_chn = dma_claim_unused_channel(true);
 	s_tx_dma_chn = dma_claim_unused_channel(true);
+#ifdef USE_TWO_RX_SM
+	s_rx_dma_chn_2 = dma_claim_unused_channel(true);
+#endif
+#ifdef USE_TWO_RX_SM
+	DBG("DMA RX %d %d TX %d", s_rx_dma_chn, s_rx_dma_chn_2, s_tx_dma_chn);
+#else
+	DBG("DMA RX %d TX %d", s_rx_dma_chn, s_tx_dma_chn);
+#endif
 
 	s_rx_dma_chn_cfg = dma_channel_get_default_config(s_rx_dma_chn);
 
@@ -447,6 +523,15 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif)
 	channel_config_set_write_increment(&s_rx_dma_chn_cfg, true);
 	channel_config_set_dreq(&s_rx_dma_chn_cfg, pio_get_dreq(PICO_RMII_PIO, PICO_RMII_SM_RX, false));
 	channel_config_set_transfer_data_size(&s_rx_dma_chn_cfg, DMA_SIZE_8);
+
+#ifdef USE_TWO_RX_SM
+	s_rx_dma_chn_cfg_2 = dma_channel_get_default_config(s_rx_dma_chn_2);
+
+	channel_config_set_read_increment(&s_rx_dma_chn_cfg_2, false);
+	channel_config_set_write_increment(&s_rx_dma_chn_cfg_2, true);
+	channel_config_set_dreq(&s_rx_dma_chn_cfg_2, pio_get_dreq(PICO_RMII_PIO, PICO_RMII_SM_RX_2, false));
+	channel_config_set_transfer_data_size(&s_rx_dma_chn_cfg_2, DMA_SIZE_8);
+#endif
 
 	s_tx_dma_chn_cfg = dma_channel_get_default_config(s_tx_dma_chn);
 
@@ -491,21 +576,46 @@ static err_t netif_rmii_ethernet_low_init(struct netif *netif)
 		sizeof(s_rx_frame[0].data),
 		true
 	);
+	s_rx_frame_idx[0] = 0;
+
+#ifdef USE_TWO_RX_SM
+	dma_channel_configure(
+		s_rx_dma_chn_2, &s_rx_dma_chn_cfg_2,
+		s_rx_frame[1].data,
+		((uint8_t*)&PICO_RMII_PIO->rxf[PICO_RMII_SM_RX_2]) + 3,
+		sizeof(s_rx_frame[1].data),
+		true
+	);
+	s_rx_frame_idx[1] = 1;
+	s_rx_frame_head = 1;
+#endif
 
 	// Install ISR #3 callback for RX-SM
 	irq_set_exclusive_handler(PIO0_IRQ_0, rx_sm_isr_handler);
     irq_set_enabled(PIO0_IRQ_0, true);
-    pio0->inte0 = (PIO_IRQ0_INTE_SM0_BITS<<3); // IRQ = 3
+    PICO_RMII_PIO->inte0 |= (PIO_IRQ0_INTE_SM0_BITS<<PICO_RMII_SM_RX);
+#ifdef USE_TWO_RX_SM
+    PICO_RMII_PIO->inte0 |= (PIO_IRQ0_INTE_SM0_BITS<<PICO_RMII_SM_RX_2);
+#endif
 
 	// Configure & Start the RMII SM
 	rmii_ethernet_phy_tx_init(PICO_RMII_PIO, PICO_RMII_SM_TX, s_tx_sm_off, PICO_RMII_TX_PIN, PICO_RMII_RETCLK_PIN, 1);
+#ifdef USE_TWO_RX_SM
+	rmii_ethernet_phy_rx_2_init(PICO_RMII_PIO, PICO_RMII_SM_RX, s_rx_sm_off, PICO_RMII_RX_PIN, 1);
+	rmii_ethernet_phy_rx_2_init(PICO_RMII_PIO, PICO_RMII_SM_RX_2, s_rx_sm_off, PICO_RMII_RX_PIN, 1);
+#else
 	rmii_ethernet_phy_rx_init(PICO_RMII_PIO, PICO_RMII_SM_RX, s_rx_sm_off, PICO_RMII_RX_PIN, 1);
-
+#endif
 	return ERR_OK;
 }
 
 void netif_rmii_ethernet_loop()
-{	while (1)	{	netif_rmii_ethernet_poll();	}
+{
+#ifdef USE_TWO_RX_SM
+	pio_interrupt_clear(PICO_RMII_PIO, 4 + PICO_RMII_SM_RX);	// trigger first sm
+	DBG("Trigger RX SM");
+#endif
+	while (1)	{	netif_rmii_ethernet_poll();	}
 }
 
 // ------------------------------------------------------------------
@@ -536,16 +646,3 @@ err_t netif_rmii_ethernet_init(struct netif *netif, struct netif_rmii_ethernet_c
 	timelapse_link(tl_tx);
 }
 
-// simple profile with `ping IP -f -s 1460`
-// (enable USE_TIMELAPSE, disable USE_RMII_SM_STAT)
-// TX = 312usec = CRC (283usec, 91%) + other (29usec)
-// RX = 736usec = CRC (283usec, 38%) + LwIP (469, 64%) + other (-16usec, 0%)
-// TX R/N/X 762 254 416 RX R/N/X 762 639 894 NET R/N/X 762 391 597 CRC R/N/X 1524 225 385
-// TX R/N/X 766 253 386 RX R/N/X 766 635 873 NET R/N/X 766 389 577 CRC R/N/X 1532 225 355
-// TX R/N/X 748 253 406 RX R/N/X 748 638 874 NET R/N/X 748 391 588 CRC R/N/X 1496 225 378
-// TX R/N/X 765 253 327 RX R/N/X 765 638 775 NET R/N/X 765 390 496 CRC R/N/X 1530 225 300
-// TX R/N/X 763 255 316 RX R/N/X 763 639 757 NET R/N/X 763 393 481 CRC R/N/X 1526 225 290
-// AVERAGE  761 254 370          761 638 835           761 391 548           1522 225 342
-//               |___|                |___|                 |___|                  |___|
-//                 |                    |                     |                      |
-// AVERAGE        312                  736                   469                    283

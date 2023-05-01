@@ -4,9 +4,26 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-.program rmii_ethernet_phy_rx_data	; Must be run at 100MHz
+/*
+	Actual IRQ number corresponding relative IRQ number of each SM
+
+	+---------+-----+-----+-----+-----+
+	| Rel IRQ |  4  |  5  |  6  |  7  |
+	+---------+-----+-----+-----+-----+
+	|  SM 0   |  4  |  5  |  6  |  7  |	`irq wait 4 rel` of SM#0 = IRQ 4, `irq clear 6 rel` of SM#0 = IRQ 6
+	+---------+-----+-----+-----+-----+
+	|  SM 1   |  5  |  6  |  7  |  4  |
+	+---------+-----+-----+-----+-----+
+	|  SM 2   |  6  |  7  |  4  |  5  | `irq wait 4 rel` of SM#2 = IRQ 6, `irq clear 6 rel` of SM#0 = IRQ 4
+	+---------+-----+-----+-----+-----+
+	|  SM 3   |  7  |  4  |  5  |  6  |
+	+---------+-----+-----+-----+-----+
+*/
+.program rmii_ethernet_phy_rx_2_data	; Must be run at 100MHz
 
 .wrap_target
+	irq wait 4 rel		; wait until counterpart RX SM finish Receiving
+
 	; ----- [STEP_A] check IDLE
 	wait 1 gpio 23 [1]	; wait until CLK=H
 idle:
@@ -37,16 +54,17 @@ crsdv_h:
 
 	; ----- [STEP-H] raise ISR #3 to inform end-of-frame and wait for ISR to clear
 	;                (ISR code should clear ISR after preparing next DMA buffer)
+	irq clear 6 rel		; inform counterpart RX SM to start Receiving
 	irq wait 0 rel
 .wrap	; return to [STEP-A], new DMA buffer is ready!
 
 
 % c-sdk {
 
-static inline void rmii_ethernet_phy_rx_init(PIO pio, uint sm, uint offset, uint pin, uint div) {
+static inline void rmii_ethernet_phy_rx_2_init(PIO pio, uint sm, uint offset, uint pin, uint div) {
 	pio_sm_set_consecutive_pindirs(pio, sm, pin, 3, false);
 
-	pio_sm_config c = rmii_ethernet_phy_rx_data_program_get_default_config(offset);
+	pio_sm_config c = rmii_ethernet_phy_rx_2_data_program_get_default_config(offset);
 	sm_config_set_in_pins(&c, pin);
 
 	pio_gpio_init(pio, pin);
